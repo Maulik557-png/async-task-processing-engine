@@ -10,19 +10,20 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 
 /**
- * Phase 2 verification harness — submits 10 tasks in rapid succession and
- * prints their IDs. The log output will show task-worker-1 through task-worker-5
- * picking up tasks concurrently (not sequentially).
+ * Phase 2 verification harness — kept for historical reference only.
  *
- * Annotated @Profile("!test") so this runner does NOT fire during unit tests,
- * avoiding side effects in future test phases.
+ * DEACTIVATED in Phase 3: the REST layer now provides the canonical submission
+ * path. The @Profile("phase2-only") annotation means this runner will NEVER fire
+ * during normal startup or tests (no Spring profile named "phase2-only" is ever
+ * activated). This preserves the file for code-review purposes without polluting
+ * the Phase 3 manual curl verification with pre-submitted tasks.
  *
- * This class will be removed or replaced in Phase 3 when the REST endpoint
- * provides a proper submission path.
+ * If you need to re-run Phase 2's concurrent submission test, start the app
+ * with --spring.profiles.active=phase2-only.
  */
 @Slf4j
 @Configuration
-@Profile("!test")
+@Profile("phase2-only")
 public class Phase2VerificationRunner {
 
     @Bean
@@ -31,7 +32,7 @@ public class Phase2VerificationRunner {
             log.info("=== Phase 2 Verification: Submitting 10 tasks ===");
 
             TaskType[] types = TaskType.values();
-            TaskPriority[] priorities = TaskPriority.values(); 
+            TaskPriority[] priorities = TaskPriority.values();
 
             for (int i = 1; i <= 10; i++) {
                 TaskType type = types[i % types.length];
@@ -40,7 +41,8 @@ public class Phase2VerificationRunner {
                         type,
                         priority,
                         "{\"index\":" + i + "}",
-                        "phase2-runner"
+                        "phase2-runner",
+                        3   // default maxRetries
                 );
                 log.info(">>> Submitted task #{}: id={} type={} priority={}", i, taskId, type, priority);
             }
