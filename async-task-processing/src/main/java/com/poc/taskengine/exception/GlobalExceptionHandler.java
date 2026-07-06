@@ -1,12 +1,13 @@
 package com.poc.taskengine.exception;
 
 import com.poc.taskengine.dto.ErrorResponse;
+import com.poc.taskengine.exception.TaskQueueFullException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
-import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -36,6 +37,7 @@ import java.util.stream.Collectors;
  *   TaskNotFoundException         → 404 Not Found
  *   TaskAlreadyExistsException    → 409 Conflict
  *   InvalidTaskStateException     → 400 Bad Request
+ *   TaskQueueFullException        → 503 Service Unavailable
  *   MethodArgumentNotValidException → 400 Bad Request (Bean Validation failures)
  *   MethodArgumentTypeMismatchException → 400 Bad Request (enum parse failures)
  *   Exception (catch-all)         → 500 Internal Server Error
@@ -47,6 +49,38 @@ import java.util.stream.Collectors;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    // ─── 503 Service Unavailable — rate limit reached ─────────────────────────
+    //
+    // WHY 503 and not 429 Too Many Requests?
+    //   429 implies the CLIENT is sending too fast and should slow down.
+    //   503 implies the SERVER is temporarily at capacity. Our limit is on
+    //   in-flight task slots (a server resource), not per-client rate.
+    //
+    // WHY Retry-After: 5?
+    //   A reasonable hint: tasks typically complete in 0.5–2.5 s; after 5 s
+    //   at least some slots should have freed. The client is encouraged to retry
+    //   rather than give up. RFC 7231 defines Retry-After as advisory.
+
+    @ExceptionHandler(TaskQueueFullException.class)
+    public ResponseEntity<ErrorResponse> handleQueueFull(
+            TaskQueueFullException ex,
+            HttpServletRequest request) {
+
+        log.warn("Task queue full — returning 503: path={}", request.getRequestURI());
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, "5");
+
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .headers(headers)
+                .body(new ErrorResponse(
+                        HttpStatus.SERVICE_UNAVAILABLE.value(),
+                        "Service Unavailable",
+                        ex.getMessage(),
+                        request.getRequestURI()));
+    }
 
     // ─── 404 Not Found ────────────────────────────────────────────────────────
 
