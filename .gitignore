@@ -91,6 +91,9 @@ Thumbs.db
 *.swp
 *.swo
 PROGRESS.md
+flood-payload.json
+test-payload.json
+no-type-payload.json
 
 # Environment files
 .env
