@@ -9,6 +9,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Core domain object representing a unit of asynchronous work.
@@ -117,4 +119,10 @@ public class Task {
      * without going back to the worker.
      */
     private String result;
+
+    /**
+     * History of all status transitions that this task has undergone.
+     */
+    @Builder.Default
+    private List<TaskAuditEvent> auditTrail = new ArrayList<>();
 }

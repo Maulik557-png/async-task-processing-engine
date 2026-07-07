@@ -5,6 +5,8 @@ import com.poc.taskengine.enums.TaskStatus;
 import com.poc.taskengine.enums.TaskType;
 
 import java.time.Instant;
+import java.util.List;
+import com.poc.taskengine.model.TaskAuditEvent;
 
 /**
  * Outbound DTO returned by every task-related endpoint.
@@ -33,6 +35,7 @@ public class TaskResponse {
     private String result;
     private String errorMessage;
     private int retryCount;
+    private List<TaskAuditEvent> auditTrail;
 
     // ── Private constructor — callers must go through TaskMapper ─────────────
     // This prevents ad-hoc construction that might forget to copy a field.
@@ -57,6 +60,7 @@ public class TaskResponse {
         public Builder result(String v)            { response.result = v;        return this; }
         public Builder errorMessage(String v)      { response.errorMessage = v;  return this; }
         public Builder retryCount(int v)           { response.retryCount = v;    return this; }
+        public Builder auditTrail(List<TaskAuditEvent> v) { response.auditTrail = v; return this; }
 
         public TaskResponse build() { return response; }
     }
@@ -73,4 +77,5 @@ public class TaskResponse {
     public String getResult()           { return result; }
     public String getErrorMessage()     { return errorMessage; }
     public int getRetryCount()          { return retryCount; }
+    public List<TaskAuditEvent> getAuditTrail() { return auditTrail; }
 }
