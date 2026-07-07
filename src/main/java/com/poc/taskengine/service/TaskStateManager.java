@@ -5,6 +5,7 @@ import com.poc.taskengine.exception.InvalidTaskStateException;
 import com.poc.taskengine.exception.TaskNotFoundException;
 import com.poc.taskengine.model.Task;
 import com.poc.taskengine.repository.TaskRepository;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -57,6 +58,7 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class TaskStateManager {
 
     private final TaskRepository taskRepository;
@@ -70,10 +72,6 @@ public class TaskStateManager {
             TaskStatus.CANCELLED,
             TaskStatus.TIMED_OUT
     );
-
-    public TaskStateManager(TaskRepository taskRepository) {
-        this.taskRepository = taskRepository;
-    }
 
     /**
      * Atomically verify a task is in {@code expectedStatus} and transition it to

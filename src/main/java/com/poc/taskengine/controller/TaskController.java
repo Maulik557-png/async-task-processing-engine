@@ -7,6 +7,7 @@ import com.poc.taskengine.enums.TaskStatus;
 import com.poc.taskengine.model.Task;
 import com.poc.taskengine.service.TaskService;
 import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -34,13 +35,10 @@ import java.util.Map;
 @Slf4j
 @RestController
 @RequestMapping("/api/v1/tasks")
+@RequiredArgsConstructor
 public class TaskController {
 
     private final TaskService taskService;
-
-    public TaskController(TaskService taskService) {
-        this.taskService = taskService;
-    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // POST /api/v1/tasks

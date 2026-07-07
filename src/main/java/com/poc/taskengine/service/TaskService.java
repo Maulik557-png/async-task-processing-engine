@@ -18,7 +18,6 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
@@ -60,11 +59,6 @@ public class TaskService {
 
     /** Maximum number of tasks in-flight (PENDING + IN_PROGRESS) at any time. */
     private static final int MAX_IN_FLIGHT = 50;
-
-    private static final Set<TaskStatus> TERMINAL_STATUSES = Set.of(
-            TaskStatus.COMPLETED, TaskStatus.FAILED,
-            TaskStatus.CANCELLED, TaskStatus.TIMED_OUT
-    );
 
     private final TaskRepository taskRepository;
     private final Executor taskExecutor;
@@ -288,7 +282,7 @@ public class TaskService {
     private void enqueueWorker(Task task) {
         Executor executor = selectExecutor(task.getType());
         TaskWorker worker = new TaskWorker(
-                task, taskRepository, stateManager, executor, retryScheduler, circuitBreaker, registry, metricsRegistry);
+                task, stateManager, retryScheduler, circuitBreaker, registry, metricsRegistry);
 
         Runnable rateLimitedWorker = () -> {
             try {

@@ -5,6 +5,8 @@ import com.poc.taskengine.enums.TaskType;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import lombok.Getter;
+import lombok.Setter;
 
 /**
  * Inbound DTO for the POST /api/v1/tasks endpoint.
@@ -18,6 +20,8 @@ import jakarta.validation.constraints.NotNull;
  * A constraint violation produces a MethodArgumentNotValidException which
  * GlobalExceptionHandler converts to a structured 400 response.
  */
+@Getter
+@Setter
 public class TaskSubmitRequest {
 
     /**
@@ -55,23 +59,4 @@ public class TaskSubmitRequest {
      */
     @Min(value = 0, message = "maxRetries must be 0 or greater")
     private Integer maxRetries;
-
-    // ── Getters and Setters ───────────────────────────────────────────────────
-    // Plain getters/setters (no Lombok) so this class stays explicit and readable
-    // without requiring the annotation processor at the DTO boundary.
-
-    public TaskType getType()            { return type; }
-    public void setType(TaskType type)   { this.type = type; }
-
-    public TaskPriority getPriority()                   { return priority; }
-    public void setPriority(TaskPriority priority)      { this.priority = priority; }
-
-    public String getPayload()                { return payload; }
-    public void setPayload(String payload)    { this.payload = payload; }
-
-    public String getSubmittedBy()                   { return submittedBy; }
-    public void setSubmittedBy(String submittedBy)   { this.submittedBy = submittedBy; }
-
-    public Integer getMaxRetries()                   { return maxRetries; }
-    public void setMaxRetries(Integer maxRetries)    { this.maxRetries = maxRetries; }
 }

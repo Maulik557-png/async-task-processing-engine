@@ -2,7 +2,6 @@ package com.poc.taskengine.worker;
 
 import com.poc.taskengine.enums.TaskStatus;
 import com.poc.taskengine.model.Task;
-import com.poc.taskengine.repository.TaskRepository;
 import com.poc.taskengine.service.CircuitBreakerRegistry;
 import com.poc.taskengine.service.MetricsRegistry;
 import com.poc.taskengine.service.RetryScheduler;
@@ -12,7 +11,6 @@ import org.slf4j.MDC;
 
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -63,22 +61,18 @@ public class TaskWorker implements Runnable {
             new ConcurrentHashMap<>();
 
     private final Task task;
-    private final TaskRepository taskRepository;
     private final TaskStateManager stateManager;
-    private final Executor executor;
     private final RetryScheduler retryScheduler;
     private final CircuitBreakerRegistry circuitBreaker;
     private final TaskHandlerRegistry registry;
     private final MetricsRegistry metricsRegistry;
 
-    public TaskWorker(Task task, TaskRepository taskRepository,
-                      TaskStateManager stateManager, Executor executor,
+    public TaskWorker(Task task,
+                      TaskStateManager stateManager,
                       RetryScheduler retryScheduler, CircuitBreakerRegistry circuitBreaker,
                       TaskHandlerRegistry registry, MetricsRegistry metricsRegistry) {
         this.task = task;
-        this.taskRepository = taskRepository;
         this.stateManager = stateManager;
-        this.executor = executor;
         this.retryScheduler = retryScheduler;
         this.circuitBreaker = circuitBreaker;
         this.registry = registry;

@@ -1,5 +1,7 @@
 package com.poc.taskengine.dto;
 
+import lombok.Getter;
+
 import java.time.Instant;
 
 /**
@@ -18,11 +20,12 @@ import java.time.Instant;
  * Fields mirror what the Phase 3 spec requires:
  *   { timestamp, status, error, message, path }
  */
+@Getter
 public class ErrorResponse {
 
     /**
      * When the error was generated — ISO-8601 UTC string via Jackson's
-     * default Instant serialiser. Lets the caller correlate with server logs.
+     * default Instant serialiser. Correlates with server logs.
      */
     private final Instant timestamp;
 
@@ -56,12 +59,4 @@ public class ErrorResponse {
         this.message = message;
         this.path = path;
     }
-
-    // ── Getters only — this DTO is write-once, read-many ─────────────────────
-
-    public Instant getTimestamp() { return timestamp; }
-    public int getStatus()        { return status; }
-    public String getError()      { return error; }
-    public String getMessage()    { return message; }
-    public String getPath()       { return path; }
 }

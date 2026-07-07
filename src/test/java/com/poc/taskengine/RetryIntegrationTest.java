@@ -190,10 +190,11 @@ class RetryIntegrationTest {
 
         // A subsequent success must reset the counter.
         String successId = UUID.randomUUID().toString();
-        // No forceFailCounts entry → this task succeeds naturally.
+        // Set maxRetries = 5 so that even if it encounters the random 20% SMTP failure,
+        // it retries and succeeds, preventing test flakiness.
         taskService.submitTask(
                 TaskType.EMAIL_NOTIFICATION, TaskPriority.LOW,
-                "{\"test\":\"cb-reset\"}", "cb-test", 0, successId);
+                "{\"test\":\"cb-reset\"}", "cb-test", 5, successId);
         Task successTask = waitForTerminal(successId, 10_000);
         assertThat(successTask.getStatus()).isEqualTo(TaskStatus.COMPLETED);
 

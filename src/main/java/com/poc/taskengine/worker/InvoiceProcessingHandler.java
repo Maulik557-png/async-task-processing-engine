@@ -20,15 +20,12 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 @Slf4j
 @Component
+@lombok.RequiredArgsConstructor
 public class InvoiceProcessingHandler implements TaskHandler {
 
     private final ObjectMapper objectMapper;
     private final ReentrantLock lock = new ReentrantLock();
     private final Set<String> processedInvoiceIds = new HashSet<>();
-
-    public InvoiceProcessingHandler(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-    }
 
     @Override
     public TaskType getSupportedType() {
