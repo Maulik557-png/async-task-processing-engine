@@ -1,5 +1,6 @@
 package com.poc.taskengine.config;
 
+import com.poc.taskengine.worker.LoggingRejectedExecutionHandler;
 import com.poc.taskengine.worker.PriorityTaskWrapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -87,24 +88,15 @@ public class ThreadPoolConfig {
                     t.setDaemon(false); // non-daemon so JVM waits for tasks on shutdown
                     return t;
                 },
-                // CallerRunsPolicy as secondary safety net — see class Javadoc above.
-                new ThreadPoolExecutor.CallerRunsPolicy()
+                // Phase 5: LoggingRejectedExecutionHandler replaces CallerRunsPolicy.
+                // See LoggingRejectedExecutionHandler Javadoc for full policy comparison.
+                new LoggingRejectedExecutionHandler()
         );
 
-        // Graceful shutdown: when the JVM receives SIGTERM, wait up to 30 s for
-        // in-flight tasks before forcing termination.  Without this, tasks are
-        // killed mid-execution, leaving orphaned IN_PROGRESS records in the store.
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            executor.shutdown();
-            try {
-                if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
-                    executor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                executor.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        }));
+        // NOTE: JVM shutdown hook removed in Phase 5.
+        // Graceful shutdown is now handled by ShutdownManager @PreDestroy,
+        // which runs inside the Spring lifecycle with full bean access.
+        // See ShutdownManager.java for the detailed shutdown sequence.
 
         return executor;
     }

@@ -83,8 +83,9 @@ public class TaskStateManager {
      * already-mutated object, making the expectedStatus check always fail.
      * Mutate non-status fields (startedAt, result, errorMessage) AFTER this call returns.
      *
-     * <p>The lock for {@code taskId} is acquired before the repository read so no
-     * other thread can observe or change status between the check and the update.
+     * <p>TERMINAL STATE GUARD: once a task reaches COMPLETED, FAILED, CANCELLED, or TIMED_OUT,
+     * this method refuses ALL transitions. The only exception is FAILED→PENDING for retries,
+     * which must go through {@link #retryTransition(String)} instead.
      *
      * @param taskId         the task to transition
      * @param expectedStatus the status the task must currently be in
@@ -122,6 +123,48 @@ public class TaskStateManager {
             // All guards passed — safe to update.
             taskRepository.updateStatus(taskId, newStatus);
             log.debug("Task [{}] transitioned {} → {} (under lock)", taskId, currentStatus, newStatus);
+
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Special transition for retry logic: FAILED → PENDING.
+     *
+     * <p>This is the ONLY path that transitions a task out of the FAILED terminal state.
+     * The standard {@link #transitionStatus} rejects all transitions from terminal states
+     * to prevent unintended state recovery. This dedicated method allows ONLY the specific
+     * FAILED→PENDING transition required when a retry is granted.
+     *
+     * <p>WHY NOT just relax the terminal guard in transitionStatus()?
+     * Because that would allow ANY caller to "un-terminal" any task. We want only the
+     * retry scheduler to ever move a task out of FAILED. This method is the single,
+     * audited, intentional gate for that operation.
+     *
+     * @param taskId the task to re-enqueue for retry
+     * @throws TaskNotFoundException     if no task with that ID exists
+     * @throws InvalidTaskStateException if the task is not currently FAILED
+     */
+    public void retryTransition(String taskId) {
+        ReentrantLock lock = locks.computeIfAbsent(taskId, id -> new ReentrantLock());
+
+        lock.lock();
+        try {
+            Task task = taskRepository.findById(taskId)
+                    .orElseThrow(() -> new TaskNotFoundException(taskId));
+
+            TaskStatus currentStatus = task.getStatus();
+
+            if (currentStatus != TaskStatus.FAILED) {
+                log.warn("Retry transition rejected for task [{}]: expected FAILED but found {}",
+                        taskId, currentStatus);
+                throw new InvalidTaskStateException(taskId, currentStatus,
+                        "retry transition (expected FAILED, was " + currentStatus + ")");
+            }
+
+            taskRepository.updateStatus(taskId, TaskStatus.PENDING);
+            log.info("Task [{}] FAILED → PENDING (retry granted, under lock)", taskId);
 
         } finally {
             lock.unlock();

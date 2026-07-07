@@ -12,6 +12,7 @@ import com.poc.taskengine.worker.PriorityTaskWrapper;
 import com.poc.taskengine.worker.TaskWorker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -20,47 +21,37 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Business logic for task lifecycle management.
  *
  * PHASE 4 ADDITIONS:
+ * - Semaphore(50, true) rate limiting (tryAcquire before persist).
+ * - TaskStateManager for atomic state transitions.
+ * - PriorityTaskWrapper for priority queue ordering.
  *
- * ── SEMAPHORE RATE LIMITING ──────────────────────────────────────────────────
- * A Semaphore(50, true) caps the number of in-flight tasks (PENDING or IN_PROGRESS)
- * to 50. submitTask() calls tryAcquire() before persisting the task; if no permit
- * is available, TaskQueueFullException is thrown → HTTP 503.
+ * PHASE 5 ADDITIONS:
  *
- * WHY Semaphore OVER an AtomicInteger counter?
- *   AtomicInteger requires manual compare-and-set logic that is easy to get wrong.
- *   Semaphore encapsulates the acquire/release contract in a well-tested, named
- *   concurrency primitive that clearly communicates "limited resource" semantics.
+ * ── retryTask() ──────────────────────────────────────────────────────────────
+ * Called by RetryScheduler after a backoff delay. The task is currently FAILED.
+ * This method:
+ *   1. Increments retryCount (atomically, before re-submission).
+ *   2. Clears startedAt, completedAt, errorMessage (fresh state for next attempt).
+ *   3. Calls stateManager.retryTransition(taskId) → FAILED→PENDING (under lock).
+ *   4. Acquires a Semaphore permit (blocking with timeout — retry thread, not HTTP thread).
+ *   5. Re-wraps in TaskWorker → rateLimitedWorker → PriorityTaskWrapper, submits.
  *
- * WHY fairness=true (second constructor argument)?
- *   Without fairness, permits are granted by racing on a CAS instruction. Under
- *   sustained load (many threads calling tryAcquire() in tight loops), a thread
- *   that happens to call tryAcquire() at the exact nanosecond a permit is released
- *   wins the CAS, regardless of how long it has been waiting. A thread that is
- *   slightly unlucky in its timing could be starved indefinitely while newer requests
- *   keep winning. With fairness=true, the Semaphore maintains an internal FIFO
- *   queue of waiters and grants permits in arrival order — no thread waits longer
- *   than proportional to its wait time relative to others.
+ * WHY blocking acquire() in retryTask() but non-blocking tryAcquire() in submitTask()?
+ *   submitTask() is called from a Tomcat HTTP request thread. Blocking it under load
+ *   ties up the web server — we exist to prevent that. So tryAcquire() + 503 is correct.
+ *   retryTask() is called from a daemon retry-scheduler thread that has no HTTP client
+ *   waiting. It can afford to block briefly (up to permitTimeoutSeconds) until a permit
+ *   frees. If it times out, the task is marked FAILED permanently.
  *
- * WHY tryAcquire() (non-blocking) rather than acquire() (blocking)?
- *   acquire() would block the HTTP request thread until a permit becomes available.
- *   Blocking the Tomcat thread under load ties up the HTTP server's thread pool,
- *   which is exactly the failure mode this engine exists to prevent. tryAcquire()
- *   returns false immediately, lets us throw 503, and releases the HTTP thread.
- *
- * ── EXECUTOR INJECTION TYPE ───────────────────────────────────────────────────
- * The field type is now Executor (the interface), not ThreadPoolTaskExecutor.
- * This makes the service layer independent of the pool implementation — Phase 9
- * can swap in virtual threads with zero changes here. The @Qualifier still works
- * because Spring resolves it by bean name before checking type.
- *
- * ── TASK STATE MANAGER ────────────────────────────────────────────────────────
- * cancelTask() now delegates to TaskStateManager.transitionStatus() which acquires
- * the per-task ReentrantLock, closing the TOCTOU race in the Phase 3 implementation.
+ * ── cancelTask() shutdown guard ──────────────────────────────────────────────
+ * If the executor is shut down, cancelTask is still available (it doesn't enqueue anything).
+ * No change needed; the method only updates the repository.
  */
 @Slf4j
 @Service
@@ -77,21 +68,29 @@ public class TaskService {
     private final TaskRepository taskRepository;
     private final Executor taskExecutor;
     private final TaskStateManager stateManager;
+    private final RetryScheduler retryScheduler;
+    private final CircuitBreakerRegistry circuitBreaker;
+
+    @Value("${task.retry.permit-timeout-seconds:5}")
+    private long permitTimeoutSeconds;
 
     /**
      * Fair Semaphore acting as the in-flight task capacity gate.
-     *
-     * WHY fair=true: see class-level Javadoc above.
-     * WHY initialPermits=50: matches production capacity target.
+     * Phase 4: tryAcquire() (non-blocking) on submit, release() in worker finally-block.
+     * Phase 5: acquire(timeout) (blocking) on retry resubmission — retry threads can wait.
      */
     private final Semaphore rateLimiter = new Semaphore(MAX_IN_FLIGHT, true);
 
     public TaskService(TaskRepository taskRepository,
                        @Qualifier("taskExecutor") Executor taskExecutor,
-                       TaskStateManager stateManager) {
+                       TaskStateManager stateManager,
+                       RetryScheduler retryScheduler,
+                       CircuitBreakerRegistry circuitBreaker) {
         this.taskRepository = taskRepository;
         this.taskExecutor = taskExecutor;
         this.stateManager = stateManager;
+        this.retryScheduler = retryScheduler;
+        this.circuitBreaker = circuitBreaker;
     }
 
     /**
@@ -102,18 +101,34 @@ public class TaskService {
      */
     public String submitTask(TaskType type, TaskPriority priority,
                              String payload, String submittedBy, int maxRetries) {
+        return submitTask(type, priority, payload, submittedBy, maxRetries,
+                UUID.randomUUID().toString());
+    }
 
-        // ── Semaphore gate: acquire before persisting ─────────────────────────
-        // Acquire BEFORE saving. If we saved first and then failed to acquire, we'd
-        // have a PENDING task with no Runnable in the pool — permanently stuck.
+    /**
+     * Overload that accepts a caller-provided task ID.
+     *
+     * <p>This is useful in tests where the caller needs to pre-register the task ID
+     * in {@link com.poc.taskengine.worker.TaskWorker#forceFailCounts} BEFORE the
+     * worker thread starts executing. With the standard overload, the UUID is generated
+     * inside submitTask — the caller cannot know it before submission, creating a race
+     * where the worker picks up the task before the test can register force-fail data.
+     *
+     * <p>In production code, always use the 5-argument overload (UUID generated here).
+     *
+     * @throws TaskQueueFullException if the in-flight task limit (50) has been reached
+     */
+    public String submitTask(TaskType type, TaskPriority priority,
+                             String payload, String submittedBy, int maxRetries,
+                             String taskId) {
+
         if (!rateLimiter.tryAcquire()) {
-            log.warn("Rate limit reached ({} in-flight). Rejecting submission by {}",
-                    MAX_IN_FLIGHT, submittedBy);
+            log.warn("Rate limit reached ({} in-flight). Rejecting submission by {}", MAX_IN_FLIGHT, submittedBy);
             throw new TaskQueueFullException();
         }
 
         Task task = Task.builder()
-                .taskId(UUID.randomUUID().toString())
+                .taskId(taskId)
                 .type(type)
                 .priority(priority)
                 .status(TaskStatus.PENDING)
@@ -124,38 +139,70 @@ public class TaskService {
                 .maxRetries(maxRetries)
                 .build();
 
-        // Persist before submitting to the pool — PENDING record exists even if
-        // the app crashes between save() and execute().
         taskRepository.save(task);
-
         log.info("Task [{}] submitted: type={}, priority={}, submittedBy={}, maxRetries={}",
                 task.getTaskId(), type, priority, submittedBy, maxRetries);
 
-        // ── Wrap TaskWorker in a permit-releasing outer Runnable ──────────────
-        // The permit is released in a finally block so it is always returned,
-        // even if the worker throws an uncaught exception.
-        //
-        // WHY a wrapper Runnable rather than releasing inside TaskWorker directly?
-        //   TaskWorker should not know about the rate limiter. The wrapper keeps
-        //   the rate-limiting concern in the service layer where it belongs.
-        TaskWorker worker = new TaskWorker(task, taskRepository, stateManager, taskExecutor);
-        Runnable rateLimitedWorker = () -> {
-            try {
-                worker.run();
-            } finally {
-                rateLimiter.release();
-                log.debug("Semaphore permit released for task [{}]. Available: {}/{}",
-                        task.getTaskId(), rateLimiter.availablePermits(), MAX_IN_FLIGHT);
-            }
-        };
-
-        // ── Wrap in PriorityTaskWrapper for priority queue ordering ───────────
-        // PriorityBlockingQueue uses PriorityTaskWrapper.compareTo() to determine
-        // dequeue order. Without this wrapper the queue would try to cast the
-        // Runnable to Comparable and throw ClassCastException.
-        taskExecutor.execute(new PriorityTaskWrapper(rateLimitedWorker, priority, task.getTaskId()));
-
+        enqueueWorker(task);
         return task.getTaskId();
+    }
+
+    /**
+     * Re-enqueue a FAILED task for retry after backoff.
+     *
+     * <p>Called by {@link RetryScheduler} after the backoff delay expires.
+     * The task is currently in FAILED state. This method:
+     * <ol>
+     *   <li>Increments {@code retryCount} to reflect the upcoming attempt number.</li>
+     *   <li>Resets transient fields for a clean attempt.</li>
+     *   <li>Atomically transitions FAILED → PENDING via {@code retryTransition}.</li>
+     *   <li>Acquires a Semaphore permit (blocking with timeout — safe on scheduler threads).</li>
+     *   <li>Submits a new TaskWorker to the pool.</li>
+     * </ol>
+     *
+     * @param taskId the ID of the FAILED task to retry
+     */
+    public void retryTask(String taskId) {
+        Task task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new TaskNotFoundException(taskId));
+
+        // Increment retryCount — records which attempt number this will be.
+        task.setRetryCount(task.getRetryCount() + 1);
+
+        // Clear transient fields so the retry attempt starts fresh.
+        task.setStartedAt(null);
+        task.setCompletedAt(null);
+        task.setErrorMessage(null);
+        task.setResult(null);
+
+        // Atomically: FAILED → PENDING (the only path out of FAILED).
+        try {
+            stateManager.retryTransition(taskId);
+        } catch (InvalidTaskStateException e) {
+            log.warn("Retry aborted for task [{}] — unexpected state: {}", taskId, e.getMessage());
+            return;
+        }
+
+        // Acquire Semaphore permit. Blocking is acceptable here (retry scheduler thread).
+        try {
+            if (!rateLimiter.tryAcquire(permitTimeoutSeconds, TimeUnit.SECONDS)) {
+                log.warn("Retry permit acquisition timed out for task [{}] after {}s — marking permanently FAILED",
+                        taskId, permitTimeoutSeconds);
+                task.setErrorMessage("Retry abandoned: system at capacity for " + permitTimeoutSeconds + "s");
+                stateManager.transitionStatus(taskId, TaskStatus.PENDING, TaskStatus.FAILED);
+                circuitBreaker.recordFailure(task.getType());
+                return;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Retry permit acquisition interrupted for task [{}]", taskId);
+            return;
+        }
+
+        log.info("Task [{}] re-enqueued for retry #{}/{} (FAILED→PENDING complete)",
+                taskId, task.getRetryCount(), task.getMaxRetries());
+
+        enqueueWorker(task);
     }
 
     /**
@@ -188,23 +235,16 @@ public class TaskService {
     /**
      * Cancel a task that is still PENDING.
      *
-     * PHASE 4: Delegates to TaskStateManager.transitionStatus() which acquires
-     * the per-task ReentrantLock before verifying and updating status. This closes
-     * the TOCTOU race in the Phase 3 implementation where a worker could move the
-     * task to IN_PROGRESS between findById() and updateStatus().
-     *
      * @throws TaskNotFoundException      if no task with that ID exists
      * @throws InvalidTaskStateException  if the task is not in PENDING status
      */
     public void cancelTask(String taskId) {
-        // Verify the task exists first for a clear 404 message.
         taskRepository.findById(taskId)
                 .orElseThrow(() -> {
                     log.warn("Cancel requested for unknown task: id={}", taskId);
                     return new TaskNotFoundException(taskId);
                 });
 
-        // Atomic lock+verify+update. Throws InvalidTaskStateException if not PENDING.
         stateManager.transitionStatus(taskId, TaskStatus.PENDING, TaskStatus.CANCELLED);
         log.info("Task [{}] cancelled (was PENDING)", taskId);
     }
@@ -212,5 +252,28 @@ public class TaskService {
     /** Expose available semaphore permits — used in tests to verify rate limiting. */
     public int availablePermits() {
         return rateLimiter.availablePermits();
+    }
+
+    // ── Internal helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Wrap a TaskWorker in the rate-limiting outer Runnable and PriorityTaskWrapper,
+     * then submit to the executor. Used by both submitTask() and retryTask().
+     */
+    private void enqueueWorker(Task task) {
+        TaskWorker worker = new TaskWorker(
+                task, taskRepository, stateManager, taskExecutor, retryScheduler, circuitBreaker);
+
+        Runnable rateLimitedWorker = () -> {
+            try {
+                worker.run();
+            } finally {
+                rateLimiter.release();
+                log.debug("Semaphore permit released for task [{}]. Available: {}/{}",
+                        task.getTaskId(), rateLimiter.availablePermits(), MAX_IN_FLIGHT);
+            }
+        };
+
+        taskExecutor.execute(new PriorityTaskWrapper(rateLimitedWorker, task.getPriority(), task.getTaskId()));
     }
 }

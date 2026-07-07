@@ -2,6 +2,7 @@ package com.poc.taskengine.exception;
 
 import com.poc.taskengine.dto.ErrorResponse;
 import com.poc.taskengine.exception.TaskQueueFullException;
+import com.poc.taskengine.exception.TaskSubmissionRejectedException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
@@ -71,6 +72,33 @@ public class GlobalExceptionHandler {
 
         HttpHeaders headers = new HttpHeaders();
         headers.set(HttpHeaders.RETRY_AFTER, "5");
+
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .headers(headers)
+                .body(new ErrorResponse(
+                        HttpStatus.SERVICE_UNAVAILABLE.value(),
+                        "Service Unavailable",
+                        ex.getMessage(),
+                        request.getRequestURI()));
+    }
+
+    // ─── 503 Service Unavailable — executor rejected task (shutdown or overflow) ─
+    //
+    // Distinct from TaskQueueFullException (Semaphore gate, pre-persistence):
+    //   TaskQueueFullException: Semaphore.tryAcquire() failed — too many in-flight tasks.
+    //   TaskSubmissionRejectedException: executor.execute() was rejected — pool shut down
+    //     or the rare queue-overflow path that bypasses the Semaphore.
+
+    @ExceptionHandler(TaskSubmissionRejectedException.class)
+    public ResponseEntity<ErrorResponse> handleSubmissionRejected(
+            TaskSubmissionRejectedException ex,
+            HttpServletRequest request) {
+
+        log.warn("Task submission rejected by executor — returning 503: path={}", request.getRequestURI());
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, "10");
 
         return ResponseEntity
                 .status(HttpStatus.SERVICE_UNAVAILABLE)
