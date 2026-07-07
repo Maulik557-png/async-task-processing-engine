@@ -65,13 +65,15 @@ public class TaskTimeoutWatchdog {
 
     private final TaskRepository taskRepository;
     private final TaskStateManager stateManager;
+    private final MetricsRegistry metricsRegistry;
 
     @Value("${task.timeout.seconds:60}")
     private long taskTimeoutSeconds;
 
-    public TaskTimeoutWatchdog(TaskRepository taskRepository, TaskStateManager stateManager) {
+    public TaskTimeoutWatchdog(TaskRepository taskRepository, TaskStateManager stateManager, MetricsRegistry metricsRegistry) {
         this.taskRepository = taskRepository;
         this.stateManager = stateManager;
+        this.metricsRegistry = metricsRegistry;
     }
 
     /**
@@ -96,7 +98,10 @@ public class TaskTimeoutWatchdog {
 
                     // Atomic transition: IN_PROGRESS → TIMED_OUT.
                     stateManager.transitionStatus(
-                            task.getTaskId(), TaskStatus.IN_PROGRESS, TaskStatus.TIMED_OUT);
+                            task.getTaskId(), TaskStatus.IN_PROGRESS, TaskStatus.TIMED_OUT,
+                            "Timed out by watchdog: task exceeded timeout of " + taskTimeoutSeconds + "s");
+
+                    metricsRegistry.recordTimeout();
 
                     timedOutCount++;
                     log.warn("Watchdog timed out task [{}] — type={}, startedAt={}, cutoff={}",

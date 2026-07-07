@@ -58,6 +58,7 @@ public final class TaskMapper {
                 .result(task.getResult())
                 .errorMessage(task.getErrorMessage())
                 .retryCount(task.getRetryCount())
+                .auditTrail(task.getAuditTrail() != null ? new java.util.ArrayList<>(task.getAuditTrail()) : new java.util.ArrayList<>())
                 .build();
     }
 

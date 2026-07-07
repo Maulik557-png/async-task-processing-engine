@@ -74,6 +74,7 @@ public class TaskService {
     private final RetryScheduler retryScheduler;
     private final CircuitBreakerRegistry circuitBreaker;
     private final TaskHandlerRegistry registry;
+    private final MetricsRegistry metricsRegistry;
 
     @Value("${task.retry.permit-timeout-seconds:5}")
     private long permitTimeoutSeconds;
@@ -92,7 +93,8 @@ public class TaskService {
                        TaskStateManager stateManager,
                        RetryScheduler retryScheduler,
                        CircuitBreakerRegistry circuitBreaker,
-                       TaskHandlerRegistry registry) {
+                       TaskHandlerRegistry registry,
+                       MetricsRegistry metricsRegistry) {
         this.taskRepository = taskRepository;
         this.taskExecutor = taskExecutor;
         this.criticalTaskExecutor = criticalTaskExecutor;
@@ -101,6 +103,7 @@ public class TaskService {
         this.retryScheduler = retryScheduler;
         this.circuitBreaker = circuitBreaker;
         this.registry = registry;
+        this.metricsRegistry = metricsRegistry;
     }
 
     /**
@@ -150,6 +153,7 @@ public class TaskService {
                 .build();
 
         taskRepository.save(task);
+        metricsRegistry.recordSubmission();
         log.info("Task [{}] submitted: type={}, priority={}, submittedBy={}, maxRetries={}",
                 task.getTaskId(), type, priority, submittedBy, maxRetries);
 
@@ -284,7 +288,7 @@ public class TaskService {
     private void enqueueWorker(Task task) {
         Executor executor = selectExecutor(task.getType());
         TaskWorker worker = new TaskWorker(
-                task, taskRepository, stateManager, executor, retryScheduler, circuitBreaker, registry);
+                task, taskRepository, stateManager, executor, retryScheduler, circuitBreaker, registry, metricsRegistry);
 
         Runnable rateLimitedWorker = () -> {
             try {

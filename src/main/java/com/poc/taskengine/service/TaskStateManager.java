@@ -8,7 +8,9 @@ import com.poc.taskengine.repository.TaskRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.Set;
+import com.poc.taskengine.model.TaskAuditEvent;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -95,6 +97,13 @@ public class TaskStateManager {
      *                                   or if the task is already in a terminal state
      */
     public void transitionStatus(String taskId, TaskStatus expectedStatus, TaskStatus newStatus) {
+        transitionStatus(taskId, expectedStatus, newStatus, "Transitioned from " + expectedStatus + " to " + newStatus);
+    }
+
+    /**
+     * Overloaded transitionStatus that accepts a custom description message for the audit event.
+     */
+    public void transitionStatus(String taskId, TaskStatus expectedStatus, TaskStatus newStatus, String message) {
         ReentrantLock lock = locks.computeIfAbsent(taskId, id -> new ReentrantLock());
 
         lock.lock();
@@ -122,6 +131,17 @@ public class TaskStateManager {
 
             // All guards passed — safe to update.
             taskRepository.updateStatus(taskId, newStatus);
+
+            // Record transition in audit trail
+            TaskAuditEvent event = new TaskAuditEvent(
+                    currentStatus,
+                    newStatus,
+                    Instant.now(),
+                    Thread.currentThread().getName(),
+                    message
+            );
+            task.getAuditTrail().add(event);
+
             log.debug("Task [{}] transitioned {} → {} (under lock)", taskId, currentStatus, newStatus);
 
         } finally {
@@ -164,6 +184,17 @@ public class TaskStateManager {
             }
 
             taskRepository.updateStatus(taskId, TaskStatus.PENDING);
+
+            // Record retry transition in audit trail
+            TaskAuditEvent event = new TaskAuditEvent(
+                    currentStatus,
+                    TaskStatus.PENDING,
+                    Instant.now(),
+                    Thread.currentThread().getName(),
+                    "Retry granted: transitioned FAILED to PENDING"
+            );
+            task.getAuditTrail().add(event);
+
             log.info("Task [{}] FAILED → PENDING (retry granted, under lock)", taskId);
 
         } finally {
