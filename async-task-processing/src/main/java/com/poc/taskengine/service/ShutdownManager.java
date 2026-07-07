@@ -68,52 +68,76 @@ public class ShutdownManager {
     private static final int SHUTDOWN_TIMEOUT_SECONDS = 30;
 
     private final Executor taskExecutor;
+    private final Executor criticalTaskExecutor;
+    private final Executor bulkTaskExecutor;
     private final ScheduledExecutorService retrySchedulerExecutor;
     private final TaskRepository taskRepository;
 
     public ShutdownManager(
             @Qualifier("taskExecutor") Executor taskExecutor,
+            @Qualifier("criticalTaskExecutor") Executor criticalTaskExecutor,
+            @Qualifier("bulkTaskExecutor") Executor bulkTaskExecutor,
             @Qualifier("retrySchedulerExecutor") ScheduledExecutorService retrySchedulerExecutor,
             TaskRepository taskRepository) {
         this.taskExecutor = taskExecutor;
+        this.criticalTaskExecutor = criticalTaskExecutor;
+        this.bulkTaskExecutor = bulkTaskExecutor;
         this.retrySchedulerExecutor = retrySchedulerExecutor;
         this.taskRepository = taskRepository;
     }
 
     @PreDestroy
     public void shutdown() {
-        ThreadPoolExecutor pool = (ThreadPoolExecutor) taskExecutor;
+        ThreadPoolExecutor defaultPool = (ThreadPoolExecutor) taskExecutor;
+        ThreadPoolExecutor criticalPool = (ThreadPoolExecutor) criticalTaskExecutor;
+        ThreadPoolExecutor bulkPool = (ThreadPoolExecutor) bulkTaskExecutor;
 
         int inProgressCount = taskRepository.findByStatus(TaskStatus.IN_PROGRESS).size();
-        int queuedCount = pool.getQueue().size();
+        int queuedCount = defaultPool.getQueue().size() + criticalPool.getQueue().size() + bulkPool.getQueue().size();
 
         log.info("=======================================================");
         log.info("=== GRACEFUL SHUTDOWN INITIATED                      ===");
         log.info("=======================================================");
         log.info("Tasks IN_PROGRESS: {}", inProgressCount);
-        log.info("Tasks in executor queue (PENDING): {}", queuedCount);
+        log.info("Tasks in executor queues (PENDING): {}", queuedCount);
         log.info("Waiting up to {}s for in-flight tasks to complete...", SHUTDOWN_TIMEOUT_SECONDS);
 
-        // Stop accepting new submissions. In-flight tasks on pool threads continue.
-        pool.shutdown();
+        // Stop accepting new submissions on all pools
+        defaultPool.shutdown();
+        criticalPool.shutdown();
+        bulkPool.shutdown();
 
         try {
-            boolean allFinished = pool.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            // Await termination of all pools in parallel (sequentially checking their completion)
+            long start = System.currentTimeMillis();
+            boolean defaultFinished = defaultPool.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            long elapsed = (System.currentTimeMillis() - start) / 1000;
+            long remainingTime = Math.max(0, SHUTDOWN_TIMEOUT_SECONDS - elapsed);
 
-            if (allFinished) {
+            boolean criticalFinished = criticalPool.awaitTermination(remainingTime, TimeUnit.SECONDS);
+            elapsed = (System.currentTimeMillis() - start) / 1000;
+            remainingTime = Math.max(0, SHUTDOWN_TIMEOUT_SECONDS - elapsed);
+
+            boolean bulkFinished = bulkPool.awaitTermination(remainingTime, TimeUnit.SECONDS);
+
+            if (defaultFinished && criticalFinished && bulkFinished) {
                 log.info("All in-flight tasks completed during shutdown window.");
             } else {
                 int remaining = taskRepository.findByStatus(TaskStatus.IN_PROGRESS).size();
                 log.warn("Shutdown window ({}s) expired. {} task(s) still IN_PROGRESS — forcing shutdown.",
                         SHUTDOWN_TIMEOUT_SECONDS, remaining);
-                // Interrupt all running threads. Workers catch InterruptedException and
-                // call markFailed() so tasks transition to FAILED rather than being orphaned.
-                pool.shutdownNow();
+
+                // Force termination
+                defaultPool.shutdownNow();
+                criticalPool.shutdownNow();
+                bulkPool.shutdownNow();
             }
 
         } catch (InterruptedException e) {
-            log.warn("Shutdown wait interrupted — forcing shutdownNow()");
-            pool.shutdownNow();
+            log.warn("Shutdown wait interrupted — forcing shutdownNow() on all pools");
+            defaultPool.shutdownNow();
+            criticalPool.shutdownNow();
+            bulkPool.shutdownNow();
             Thread.currentThread().interrupt();
         }
 

@@ -1,7 +1,6 @@
 package com.poc.taskengine.config;
 
 import com.poc.taskengine.worker.LoggingRejectedExecutionHandler;
-import com.poc.taskengine.worker.PriorityTaskWrapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -99,6 +98,54 @@ public class ThreadPoolConfig {
         // See ShutdownManager.java for the detailed shutdown sequence.
 
         return executor;
+    }
+
+    /**
+     * Dedicated pool for INVOICE_PROCESSING tasks.
+     *
+     * <p>Configured with core=3, max=5 to allocate dedicated resources to critical
+     * financial transactions and guarantee that bulk workloads cannot cause starvation.
+     */
+    @Bean(name = "criticalTaskExecutor")
+    public Executor criticalTaskExecutor() {
+        PriorityBlockingQueue<Runnable> priorityQueue = new PriorityBlockingQueue<>(64);
+        return new ThreadPoolExecutor(
+                3,              // corePoolSize: 3 threads always alive
+                5,              // maxPoolSize: up to 5 under queue pressure
+                60L, TimeUnit.SECONDS,
+                priorityQueue,
+                r -> {
+                    Thread t = new Thread(r);
+                    t.setName("critical-worker-" + t.getId());
+                    t.setDaemon(false);
+                    return t;
+                },
+                new LoggingRejectedExecutionHandler()
+        );
+    }
+
+    /**
+     * Dedicated pool for bulk EMAIL_NOTIFICATION tasks.
+     *
+     * <p>Configured with core=10, max=20 to handle high-throughput background
+     * notification bursts without impacting critical transactions.
+     */
+    @Bean(name = "bulkTaskExecutor")
+    public Executor bulkTaskExecutor() {
+        PriorityBlockingQueue<Runnable> priorityQueue = new PriorityBlockingQueue<>(64);
+        return new ThreadPoolExecutor(
+                10,             // corePoolSize: 10 threads always alive
+                20,             // maxPoolSize: up to 20 under queue pressure
+                60L, TimeUnit.SECONDS,
+                priorityQueue,
+                r -> {
+                    Thread t = new Thread(r);
+                    t.setName("bulk-worker-" + t.getId());
+                    t.setDaemon(false);
+                    return t;
+                },
+                new LoggingRejectedExecutionHandler()
+        );
     }
 }
 

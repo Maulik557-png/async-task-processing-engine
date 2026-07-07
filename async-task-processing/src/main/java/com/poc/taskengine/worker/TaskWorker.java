@@ -1,7 +1,6 @@
 package com.poc.taskengine.worker;
 
 import com.poc.taskengine.enums.TaskStatus;
-import com.poc.taskengine.enums.TaskType;
 import com.poc.taskengine.model.Task;
 import com.poc.taskengine.repository.TaskRepository;
 import com.poc.taskengine.service.CircuitBreakerRegistry;
@@ -12,7 +11,6 @@ import lombok.extern.slf4j.Slf4j;
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -68,16 +66,19 @@ public class TaskWorker implements Runnable {
     private final Executor executor;
     private final RetryScheduler retryScheduler;
     private final CircuitBreakerRegistry circuitBreaker;
+    private final TaskHandlerRegistry registry;
 
     public TaskWorker(Task task, TaskRepository taskRepository,
                       TaskStateManager stateManager, Executor executor,
-                      RetryScheduler retryScheduler, CircuitBreakerRegistry circuitBreaker) {
+                      RetryScheduler retryScheduler, CircuitBreakerRegistry circuitBreaker,
+                      TaskHandlerRegistry registry) {
         this.task = task;
         this.taskRepository = taskRepository;
         this.stateManager = stateManager;
         this.executor = executor;
         this.retryScheduler = retryScheduler;
         this.circuitBreaker = circuitBreaker;
+        this.registry = registry;
     }
 
     @Override
@@ -104,13 +105,6 @@ public class TaskWorker implements Runnable {
                 threadName, taskId, task.getType(), task.getPriority(),
                 task.getRetryCount() + 1, task.getMaxRetries() + 1);
 
-        // ── Branch: REPORT_GENERATION → CompletableFuture pipeline ──────────────
-        if (task.getType() == TaskType.REPORT_GENERATION) {
-            runReportGenerationPipeline(threadName, taskId);
-            return;
-        }
-
-        // ── Default path: simulated sleep stub with optional force-fail ─────────
         try {
             // Check force-fail test hook.
             AtomicInteger failRemaining = forceFailCounts.get(taskId);
@@ -121,26 +115,23 @@ public class TaskWorker implements Runnable {
                         + failRemaining.get() + ")");
             }
 
-            long sleepMs = ThreadLocalRandom.current().nextLong(500, 2500);
-            log.debug("[{}] Task [{}] simulating work for {}ms", threadName, taskId, sleepMs);
-            Thread.sleep(sleepMs);
+            // Resolve and execute the handler from TaskHandlerRegistry
+            TaskHandler handler = registry.getHandler(task.getType());
+            TaskResult result = handler.execute(task);
 
-            // ── Transition: IN_PROGRESS → COMPLETED ────────────────────────────
-            // Mutate non-status fields BEFORE transitionStatus (safe — we own the task).
-            task.setCompletedAt(Instant.now());
-            task.setResult("Simulated result for task " + taskId);
-            stateManager.transitionStatus(taskId, TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED);
+            // If the handler did not already transition the status (e.g. ReportGenerationPipeline transitions internally),
+            // we transition to COMPLETED here.
+            if (task.getStatus() == TaskStatus.IN_PROGRESS) {
+                task.setCompletedAt(Instant.now());
+                task.setResult(result.getResult());
+                stateManager.transitionStatus(taskId, TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED);
 
-            // Circuit breaker: reset consecutive failure counter on success.
-            circuitBreaker.recordSuccess(task.getType());
+                // Circuit breaker: reset consecutive failure counter on success.
+                circuitBreaker.recordSuccess(task.getType());
 
-            log.info("[{}] Task [{}] (type={}, priority={}) → COMPLETED (took {}ms)",
-                    threadName, taskId, task.getType(), task.getPriority(), sleepMs);
-
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("[{}] Task [{}] interrupted — marking FAILED", threadName, taskId);
-            markFailed(taskId, threadName, "Worker thread interrupted during execution");
+                log.info("[{}] Task [{}] (type={}, priority={}) → COMPLETED",
+                        threadName, taskId, task.getType(), task.getPriority());
+            }
 
         } catch (Exception e) {
             log.error("[{}] Task [{}] threw exception → will retry or fail: {}",
@@ -150,21 +141,6 @@ public class TaskWorker implements Runnable {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    private void runReportGenerationPipeline(String threadName, String taskId) {
-        try {
-            new ReportGenerationPipeline(task, stateManager, executor).execute();
-            // Pipeline's storeResult() already called transitionStatus(IN_PROGRESS→COMPLETED).
-            // Record success for circuit breaker.
-            if (task.getStatus() == TaskStatus.COMPLETED) {
-                circuitBreaker.recordSuccess(task.getType());
-            }
-        } catch (Exception e) {
-            log.error("[{}] Task [{}] pipeline threw uncaught exception: {}",
-                    threadName, taskId, e.getMessage(), e);
-            markFailed(taskId, threadName, "Pipeline uncaught exception: " + e.getMessage());
-        }
-    }
 
     /**
      * Transition IN_PROGRESS → FAILED, then check whether a retry should be scheduled.
@@ -177,23 +153,18 @@ public class TaskWorker implements Runnable {
      * <p>Sequence when retries exhausted:
      *   1. IN_PROGRESS → FAILED (permanent)
      *   2. circuitBreaker.recordFailure(type)
-     *
-     * <p>WHY transition to FAILED first (not straight to PENDING for retry)?
-     *   If we skipped FAILED and went directly IN_PROGRESS→PENDING, the failure
-     *   would be invisible in the audit trail. A task that is retrying has genuinely
-     *   failed — that should be observable via GET /api/v1/tasks/{id} between the
-     *   failure and the retry. The FAILED→PENDING transition is the explicit "retry
-     *   granted" step in retryTask(), clearly logged and auditable.
      */
     private void markFailed(String taskId, String threadName, String errorMessage) {
         task.setCompletedAt(Instant.now());
         task.setErrorMessage(errorMessage);
-        // Transition IN_PROGRESS → FAILED (always happens, regardless of retry).
-        try {
-            stateManager.transitionStatus(taskId, TaskStatus.IN_PROGRESS, TaskStatus.FAILED);
-        } catch (Exception ex) {
-            log.warn("[{}] Task [{}] could not be marked FAILED: {}", threadName, taskId, ex.getMessage());
-            return; // Cannot proceed with retry if state transition failed.
+        // Transition IN_PROGRESS → FAILED (if not already transitioned to FAILED, e.g. by pipeline error handler).
+        if (task.getStatus() == TaskStatus.IN_PROGRESS) {
+            try {
+                stateManager.transitionStatus(taskId, TaskStatus.IN_PROGRESS, TaskStatus.FAILED);
+            } catch (Exception ex) {
+                log.warn("[{}] Task [{}] could not be marked FAILED: {}", threadName, taskId, ex.getMessage());
+                return; // Cannot proceed with retry if state transition failed.
+            }
         }
 
         // Check retries.

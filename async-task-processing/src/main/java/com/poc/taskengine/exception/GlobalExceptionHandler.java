@@ -1,8 +1,6 @@
 package com.poc.taskengine.exception;
 
 import com.poc.taskengine.dto.ErrorResponse;
-import com.poc.taskengine.exception.TaskQueueFullException;
-import com.poc.taskengine.exception.TaskSubmissionRejectedException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;

@@ -9,6 +9,7 @@ import com.poc.taskengine.exception.TaskQueueFullException;
 import com.poc.taskengine.model.Task;
 import com.poc.taskengine.repository.TaskRepository;
 import com.poc.taskengine.worker.PriorityTaskWrapper;
+import com.poc.taskengine.worker.TaskHandlerRegistry;
 import com.poc.taskengine.worker.TaskWorker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -67,9 +68,12 @@ public class TaskService {
 
     private final TaskRepository taskRepository;
     private final Executor taskExecutor;
+    private final Executor criticalTaskExecutor;
+    private final Executor bulkTaskExecutor;
     private final TaskStateManager stateManager;
     private final RetryScheduler retryScheduler;
     private final CircuitBreakerRegistry circuitBreaker;
+    private final TaskHandlerRegistry registry;
 
     @Value("${task.retry.permit-timeout-seconds:5}")
     private long permitTimeoutSeconds;
@@ -83,14 +87,20 @@ public class TaskService {
 
     public TaskService(TaskRepository taskRepository,
                        @Qualifier("taskExecutor") Executor taskExecutor,
+                       @Qualifier("criticalTaskExecutor") Executor criticalTaskExecutor,
+                       @Qualifier("bulkTaskExecutor") Executor bulkTaskExecutor,
                        TaskStateManager stateManager,
                        RetryScheduler retryScheduler,
-                       CircuitBreakerRegistry circuitBreaker) {
+                       CircuitBreakerRegistry circuitBreaker,
+                       TaskHandlerRegistry registry) {
         this.taskRepository = taskRepository;
         this.taskExecutor = taskExecutor;
+        this.criticalTaskExecutor = criticalTaskExecutor;
+        this.bulkTaskExecutor = bulkTaskExecutor;
         this.stateManager = stateManager;
         this.retryScheduler = retryScheduler;
         this.circuitBreaker = circuitBreaker;
+        this.registry = registry;
     }
 
     /**
@@ -257,12 +267,24 @@ public class TaskService {
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     /**
+     * Helper to select the correct executor pool based on task type.
+     */
+    private Executor selectExecutor(TaskType type) {
+        return switch (type) {
+            case INVOICE_PROCESSING -> criticalTaskExecutor;
+            case EMAIL_NOTIFICATION -> bulkTaskExecutor;
+            default -> taskExecutor;
+        };
+    }
+
+    /**
      * Wrap a TaskWorker in the rate-limiting outer Runnable and PriorityTaskWrapper,
      * then submit to the executor. Used by both submitTask() and retryTask().
      */
     private void enqueueWorker(Task task) {
+        Executor executor = selectExecutor(task.getType());
         TaskWorker worker = new TaskWorker(
-                task, taskRepository, stateManager, taskExecutor, retryScheduler, circuitBreaker);
+                task, taskRepository, stateManager, executor, retryScheduler, circuitBreaker, registry);
 
         Runnable rateLimitedWorker = () -> {
             try {
@@ -274,6 +296,6 @@ public class TaskService {
             }
         };
 
-        taskExecutor.execute(new PriorityTaskWrapper(rateLimitedWorker, task.getPriority(), task.getTaskId()));
+        executor.execute(new PriorityTaskWrapper(rateLimitedWorker, task.getPriority(), task.getTaskId()));
     }
 }

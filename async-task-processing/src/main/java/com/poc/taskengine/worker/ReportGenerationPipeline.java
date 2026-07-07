@@ -132,43 +132,42 @@ public class ReportGenerationPipeline {
 
         CompletableFuture
                 .supplyAsync(this::fetchData, PIPELINE_EXECUTOR)
-                .thenApplyAsync(this::formatData, PIPELINE_EXECUTOR)
-                .thenApplyAsync(this::generatePDF, PIPELINE_EXECUTOR)
-                .thenApply(this::storeResult)        // synchronous — just sets result field
-                .exceptionally(this::handleError)    // catches any stage failure
-                .join();                             // blocks the MAIN POOL thread (not pipeline threads)
+                .thenApplyAsync(this::processData, PIPELINE_EXECUTOR)
+                .thenApplyAsync(this::formatOutput, PIPELINE_EXECUTOR)
+                .thenApplyAsync(this::storeResult, PIPELINE_EXECUTOR)
+                .exceptionally(this::handleError)
+                .join();
     }
 
-    // ── Stage 1: fetchData ────────────────────────────────────────────────────
+    // ── Stage 1: fetchData (~1s) ──────────────────────────────────────────────
 
     private String fetchData() {
         String thread = Thread.currentThread().getName();
-        log.info("[{}] REPORT_GENERATION task [{}] — Stage 1/4: fetchData", thread, task.getTaskId());
-        simulateWork(200, 500);
+        log.info("[{}] REPORT_GENERATION task [{}] — Stage 1/4: fetchData (expected ~1s)", thread, task.getTaskId());
+        simulateWork(900, 1100);
         String rawData = "{\"rows\":42,\"source\":\"db\"}";
         log.info("[{}] REPORT_GENERATION task [{}] — Stage 1 complete: fetched {} bytes",
                 thread, task.getTaskId(), rawData.length());
         return rawData;
     }
 
-    // ── Stage 2: formatData ───────────────────────────────────────────────────
+    // ── Stage 2: processData (~2s) ─────────────────────────────────────────────
 
-    private String formatData(String rawData) {
+    private String processData(String rawData) {
         String thread = Thread.currentThread().getName();
-        log.info("[{}] REPORT_GENERATION task [{}] — Stage 2/4: formatData (input={} bytes)",
-                thread, task.getTaskId(), rawData.length());
-        simulateWork(100, 300);
-        String formatted = "{\"formatted\":true,\"rows\":42}";
+        log.info("[{}] REPORT_GENERATION task [{}] — Stage 2/4: processData (expected ~2s)",
+                thread, task.getTaskId());
+        simulateWork(1800, 2200);
+        String processed = "{\"processed\":true,\"rows\":42}";
         log.info("[{}] REPORT_GENERATION task [{}] — Stage 2 complete", thread, task.getTaskId());
-        return formatted;
+        return processed;
     }
 
-    // ── Stage 3: generatePDF ──────────────────────────────────────────────────
-    // A deliberate failure can be injected via INJECT_PDF_FAILURE to verify exceptionally().
+    // ── Stage 3: formatOutput (~500ms) ──────────────────────────────────────────
 
-    private String generatePDF(String formattedData) {
+    private String formatOutput(String processedData) {
         String thread = Thread.currentThread().getName();
-        log.info("[{}] REPORT_GENERATION task [{}] — Stage 3/4: generatePDF", thread, task.getTaskId());
+        log.info("[{}] REPORT_GENERATION task [{}] — Stage 3/4: formatOutput (expected ~500ms)", thread, task.getTaskId());
 
         if (INJECT_PDF_FAILURE) {
             log.warn("[{}] REPORT_GENERATION task [{}] — deliberate PDF failure injected",
@@ -176,43 +175,41 @@ public class ReportGenerationPipeline {
             throw new RuntimeException("Simulated PDF generation failure (test injection)");
         }
 
-        simulateWork(200, 600);
+        simulateWork(400, 600);
         String pdfRef = "report-" + task.getTaskId() + ".pdf";
         log.info("[{}] REPORT_GENERATION task [{}] — Stage 3 complete: generated {}",
                 thread, task.getTaskId(), pdfRef);
         return pdfRef;
     }
 
-    // ── Stage 4: storeResult ──────────────────────────────────────────────────
-    // Synchronous (thenApply, not thenApplyAsync) — just updates in-memory state.
+    // ── Stage 4: storeResult (~200ms) ──────────────────────────────────────────
 
-    private Void storeResult(String pdfRef) {
+    private String storeResult(String pdfRef) {
         String thread = Thread.currentThread().getName();
-        log.info("[{}] REPORT_GENERATION task [{}] — Stage 4/4: storeResult ({})",
+        log.info("[{}] REPORT_GENERATION task [{}] — Stage 4/4: storeResult (expected ~200ms, ref={})",
                 thread, task.getTaskId(), pdfRef);
 
+        simulateWork(150, 250);
+
         // Mutate non-status fields BEFORE transitionStatus.
-        // Do NOT set task.setStatus(COMPLETED) here — transitionStatus reads the stored
-        // task reference to verify IN_PROGRESS. Pre-mutating would defeat the check.
         task.setResult("PDF available at: " + pdfRef);
         task.setCompletedAt(java.time.Instant.now());
         stateManager.transitionStatus(task.getTaskId(), TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED);
 
         log.info("[{}] REPORT_GENERATION task [{}] → COMPLETED", thread, task.getTaskId());
-        return null;
+        return pdfRef;
     }
 
     // ── Error handler ─────────────────────────────────────────────────────────
     // Called only when any stage throws. exceptionally() does NOT execute on success path.
 
-    private Void handleError(Throwable ex) {
+    private String handleError(Throwable ex) {
         String thread = Thread.currentThread().getName();
-        // CompletableFuture wraps stage exceptions in CompletionException; getCause() unwraps.
         Throwable cause = (ex.getCause() != null) ? ex.getCause() : ex;
         log.error("[{}] REPORT_GENERATION task [{}] pipeline failed: {}",
                 thread, task.getTaskId(), cause.getMessage(), cause);
 
-        // Mutate non-status fields first. Do NOT set task.status before transitionStatus.
+        // Mutate non-status fields first.
         task.setErrorMessage("Pipeline failure: " + cause.getMessage());
         task.setCompletedAt(java.time.Instant.now());
         try {
@@ -236,3 +233,4 @@ public class ReportGenerationPipeline {
         }
     }
 }
+
