@@ -138,6 +138,7 @@ public class TaskStateManager {
                     Thread.currentThread().getName(),
                     message
             );
+            event.setTask(task);
             task.getAuditTrail().add(event);
 
             log.debug("Task [{}] transitioned {} → {} (under lock)", taskId, currentStatus, newStatus);
@@ -191,6 +192,7 @@ public class TaskStateManager {
                     Thread.currentThread().getName(),
                     "Retry granted: transitioned FAILED to PENDING"
             );
+            event.setTask(task);
             task.getAuditTrail().add(event);
 
             log.info("Task [{}] FAILED → PENDING (retry granted, under lock)", taskId);
