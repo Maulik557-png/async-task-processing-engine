@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
-class Phase7IntegrationTest {
+public class Phase7IntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private TaskService taskService;
@@ -131,40 +131,40 @@ class Phase7IntegrationTest {
 
         // Transition 1: PENDING -> IN_PROGRESS
         TaskAuditEvent event1 = auditTrail.get(0);
-        assertThat(event1.fromStatus()).isEqualTo(TaskStatus.PENDING);
-        assertThat(event1.toStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
-        assertThat(event1.threadName()).contains("task-worker-");
-        assertThat(event1.message()).containsIgnoringCase("Transitioned from PENDING to IN_PROGRESS");
+        assertThat(event1.getFromStatus()).isEqualTo(TaskStatus.PENDING);
+        assertThat(event1.getToStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
+        assertThat(event1.getThreadName()).contains("task-worker-");
+        assertThat(event1.getMessage()).containsIgnoringCase("Transitioned from PENDING to IN_PROGRESS");
 
         // Transition 2: IN_PROGRESS -> FAILED
         TaskAuditEvent event2 = auditTrail.get(1);
-        assertThat(event2.fromStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
-        assertThat(event2.toStatus()).isEqualTo(TaskStatus.FAILED);
-        assertThat(event2.message()).containsIgnoringCase("Forced failure for retry test");
+        assertThat(event2.getFromStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
+        assertThat(event2.getToStatus()).isEqualTo(TaskStatus.FAILED);
+        assertThat(event2.getMessage()).containsIgnoringCase("Forced failure for retry test");
 
         // Transition 3: FAILED -> PENDING (Retry Scheduler)
         TaskAuditEvent event3 = auditTrail.get(2);
-        assertThat(event3.fromStatus()).isEqualTo(TaskStatus.FAILED);
-        assertThat(event3.toStatus()).isEqualTo(TaskStatus.PENDING);
-        assertThat(event3.threadName()).contains("retry-scheduler-");
-        assertThat(event3.message()).containsIgnoringCase("Retry granted");
+        assertThat(event3.getFromStatus()).isEqualTo(TaskStatus.FAILED);
+        assertThat(event3.getToStatus()).isEqualTo(TaskStatus.PENDING);
+        assertThat(event3.getThreadName()).contains("retry-scheduler-");
+        assertThat(event3.getMessage()).containsIgnoringCase("Retry granted");
 
         // Transition 4: PENDING -> IN_PROGRESS
         TaskAuditEvent event4 = auditTrail.get(3);
-        assertThat(event4.fromStatus()).isEqualTo(TaskStatus.PENDING);
-        assertThat(event4.toStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
-        assertThat(event4.threadName()).contains("task-worker-");
+        assertThat(event4.getFromStatus()).isEqualTo(TaskStatus.PENDING);
+        assertThat(event4.getToStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
+        assertThat(event4.getThreadName()).contains("task-worker-");
 
         // Transition 5: IN_PROGRESS -> COMPLETED
         TaskAuditEvent event5 = auditTrail.get(4);
-        assertThat(event5.fromStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
-        assertThat(event5.toStatus()).isEqualTo(TaskStatus.COMPLETED);
-        assertThat(event5.threadName()).contains("task-worker-");
+        assertThat(event5.getFromStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
+        assertThat(event5.getToStatus()).isEqualTo(TaskStatus.COMPLETED);
+        assertThat(event5.getThreadName()).contains("task-worker-");
 
         // Verify timestamps are in chronological order
         for (int i = 0; i < auditTrail.size() - 1; i++) {
-            assertThat(auditTrail.get(i).timestamp())
-                    .isBeforeOrEqualTo(auditTrail.get(i + 1).timestamp());
+            assertThat(auditTrail.get(i).getTimestamp())
+                    .isBeforeOrEqualTo(auditTrail.get(i + 1).getTimestamp());
         }
     }
 

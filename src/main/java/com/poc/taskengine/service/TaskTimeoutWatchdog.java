@@ -91,15 +91,11 @@ public class TaskTimeoutWatchdog {
         for (Task task : inProgressTasks) {
             if (task.getStartedAt() != null && task.getStartedAt().isBefore(cutoff)) {
                 try {
-                    // Mark non-status fields before the lock (see TaskStateManager Javadoc).
-                    task.setCompletedAt(Instant.now());
-                    task.setErrorMessage(
-                            "Task exceeded timeout of " + taskTimeoutSeconds + "s — marked TIMED_OUT by watchdog");
-
-                    // Atomic transition: IN_PROGRESS → TIMED_OUT.
-                    stateManager.transitionStatus(
+                    Instant completedAt = Instant.now();
+                    String msg = "Timed out by watchdog: task exceeded timeout of " + taskTimeoutSeconds + "s";
+                    stateManager.transitionStatusAndCompletedFailure(
                             task.getTaskId(), TaskStatus.IN_PROGRESS, TaskStatus.TIMED_OUT,
-                            "Timed out by watchdog: task exceeded timeout of " + taskTimeoutSeconds + "s");
+                            completedAt, msg);
 
                     metricsRegistry.recordTimeout();
 

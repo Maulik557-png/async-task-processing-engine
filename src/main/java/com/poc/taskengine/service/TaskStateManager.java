@@ -5,10 +5,14 @@ import com.poc.taskengine.exception.InvalidTaskStateException;
 import com.poc.taskengine.exception.TaskNotFoundException;
 import com.poc.taskengine.model.Task;
 import com.poc.taskengine.repository.TaskRepository;
+
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.Set;
 import com.poc.taskengine.model.TaskAuditEvent;
 import java.util.concurrent.ConcurrentHashMap;
@@ -57,23 +61,20 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
+@Transactional
 public class TaskStateManager {
 
     private final TaskRepository taskRepository;
 
-    private final ConcurrentHashMap<String, ReentrantLock> locks = new ConcurrentHashMap<>();
+    private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
 
-    /** Terminal statuses — once reached, no further transitions are permitted. */
     private static final Set<TaskStatus> TERMINAL_STATUSES = Set.of(
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
             TaskStatus.CANCELLED,
             TaskStatus.TIMED_OUT
     );
-
-    public TaskStateManager(TaskRepository taskRepository) {
-        this.taskRepository = taskRepository;
-    }
 
     /**
      * Atomically verify a task is in {@code expectedStatus} and transition it to
@@ -108,12 +109,11 @@ public class TaskStateManager {
 
         lock.lock();
         try {
-            Task task = taskRepository.findById(taskId)
+            Task task = taskRepository.findByIdForUpdate(taskId)
                     .orElseThrow(() -> new TaskNotFoundException(taskId));
 
             TaskStatus currentStatus = task.getStatus();
 
-            // Guard 1: hard stop on terminal states.
             if (TERMINAL_STATUSES.contains(currentStatus)) {
                 log.warn("Transition rejected for task [{}]: already terminal {} — refused {}",
                         taskId, currentStatus, newStatus);
@@ -121,7 +121,6 @@ public class TaskStateManager {
                         "transition to " + newStatus + " (task is already terminal)");
             }
 
-            // Guard 2: expected-status check.
             if (currentStatus != expectedStatus) {
                 log.warn("Transition rejected for task [{}]: expected {} but found {} — refused {}",
                         taskId, expectedStatus, currentStatus, newStatus);
@@ -131,6 +130,7 @@ public class TaskStateManager {
 
             // All guards passed — safe to update.
             taskRepository.updateStatus(taskId, newStatus);
+            task.setStatus(newStatus);
 
             // Record transition in audit trail
             TaskAuditEvent event = new TaskAuditEvent(
@@ -140,6 +140,7 @@ public class TaskStateManager {
                     Thread.currentThread().getName(),
                     message
             );
+            event.setTask(task);
             task.getAuditTrail().add(event);
 
             log.debug("Task [{}] transitioned {} → {} (under lock)", taskId, currentStatus, newStatus);
@@ -149,29 +150,122 @@ public class TaskStateManager {
         }
     }
 
-    /**
-     * Special transition for retry logic: FAILED → PENDING.
-     *
-     * <p>This is the ONLY path that transitions a task out of the FAILED terminal state.
-     * The standard {@link #transitionStatus} rejects all transitions from terminal states
-     * to prevent unintended state recovery. This dedicated method allows ONLY the specific
-     * FAILED→PENDING transition required when a retry is granted.
-     *
-     * <p>WHY NOT just relax the terminal guard in transitionStatus()?
-     * Because that would allow ANY caller to "un-terminal" any task. We want only the
-     * retry scheduler to ever move a task out of FAILED. This method is the single,
-     * audited, intentional gate for that operation.
-     *
-     * @param taskId the task to re-enqueue for retry
-     * @throws TaskNotFoundException     if no task with that ID exists
-     * @throws InvalidTaskStateException if the task is not currently FAILED
-     */
-    public void retryTransition(String taskId) {
+    public void transitionStatusAndStartedAt(String taskId, TaskStatus expectedStatus, TaskStatus newStatus, Instant startedAt) {
         ReentrantLock lock = locks.computeIfAbsent(taskId, id -> new ReentrantLock());
 
         lock.lock();
         try {
-            Task task = taskRepository.findById(taskId)
+            Task task = taskRepository.findByIdForUpdate(taskId)
+                    .orElseThrow(() -> new TaskNotFoundException(taskId));
+
+            TaskStatus currentStatus = task.getStatus();
+
+            if (TERMINAL_STATUSES.contains(currentStatus) || currentStatus != expectedStatus) {
+                throw new InvalidTaskStateException(taskId, currentStatus, "transition to " + newStatus);
+            }
+
+            taskRepository.updateStatusAndStartedAt(taskId, newStatus, startedAt);
+            task.setStatus(newStatus);
+            task.setStartedAt(startedAt);
+
+            TaskAuditEvent event = new TaskAuditEvent(
+                    currentStatus,
+                    newStatus,
+                    Instant.now(),
+                    Thread.currentThread().getName(),
+                    "Transitioned from " + expectedStatus + " to " + newStatus
+            );
+            event.setTask(task);
+            task.getAuditTrail().add(event);
+
+            log.debug("Task [{}] transitioned {} → {} (startedAt={}, under lock)", taskId, currentStatus, newStatus, startedAt);
+
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void transitionStatusAndCompletedSuccess(String taskId, TaskStatus expectedStatus, TaskStatus newStatus, Instant completedAt, String result) {
+        ReentrantLock lock = locks.computeIfAbsent(taskId, id -> new ReentrantLock());
+
+        lock.lock();
+        try {
+            Task task = taskRepository.findByIdForUpdate(taskId)
+                    .orElseThrow(() -> new TaskNotFoundException(taskId));
+
+            TaskStatus currentStatus = task.getStatus();
+
+            if (TERMINAL_STATUSES.contains(currentStatus) || currentStatus != expectedStatus) {
+                throw new InvalidTaskStateException(taskId, currentStatus, "transition to " + newStatus);
+            }
+
+            taskRepository.updateStatusAndCompletedSuccess(taskId, newStatus, completedAt, result);
+            task.setStatus(newStatus);
+            task.setCompletedAt(completedAt);
+            task.setResult(result);
+
+            TaskAuditEvent event = new TaskAuditEvent(
+                    currentStatus,
+                    newStatus,
+                    Instant.now(),
+                    Thread.currentThread().getName(),
+                    "Transitioned from " + expectedStatus + " to " + newStatus
+            );
+            event.setTask(task);
+            task.getAuditTrail().add(event);
+
+            log.debug("Task [{}] transitioned {} → {} (completedAt={}, under lock)", taskId, currentStatus, newStatus, completedAt);
+
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void transitionStatusAndCompletedFailure(String taskId, TaskStatus expectedStatus, TaskStatus newStatus, Instant completedAt, String errorMessage) {
+        ReentrantLock lock = locks.computeIfAbsent(taskId, id -> new ReentrantLock());
+
+        lock.lock();
+        try {
+            Task task = taskRepository.findByIdForUpdate(taskId)
+                    .orElseThrow(() -> new TaskNotFoundException(taskId));
+
+            TaskStatus currentStatus = task.getStatus();
+
+            if (currentStatus != expectedStatus) {
+                throw new InvalidTaskStateException(taskId, currentStatus, "transition to " + newStatus);
+            }
+
+            taskRepository.updateStatusAndCompletedFailure(taskId, newStatus, completedAt, errorMessage);
+            task.setStatus(newStatus);
+            task.setCompletedAt(completedAt);
+            task.setErrorMessage(errorMessage);
+
+            TaskAuditEvent event = new TaskAuditEvent(
+                    currentStatus,
+                    newStatus,
+                    Instant.now(),
+                    Thread.currentThread().getName(),
+                    errorMessage
+            );
+            event.setTask(task);
+            task.getAuditTrail().add(event);
+
+            log.debug("Task [{}] transitioned {} → {} (completedAt={}, under lock)", taskId, currentStatus, newStatus, completedAt);
+
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Special transition for retry logic: FAILED → PENDING.
+     */
+    public void retryTransition(String taskId, int retryCount, String errorMessage) {
+        ReentrantLock lock = locks.computeIfAbsent(taskId, id -> new ReentrantLock());
+
+        lock.lock();
+        try {
+            Task task = taskRepository.findByIdForUpdate(taskId)
                     .orElseThrow(() -> new TaskNotFoundException(taskId));
 
             TaskStatus currentStatus = task.getStatus();
@@ -183,7 +277,13 @@ public class TaskStateManager {
                         "retry transition (expected FAILED, was " + currentStatus + ")");
             }
 
-            taskRepository.updateStatus(taskId, TaskStatus.PENDING);
+            taskRepository.updateStatusForRetry(taskId, TaskStatus.PENDING, retryCount, errorMessage);
+            task.setStatus(TaskStatus.PENDING);
+            task.setRetryCount(retryCount);
+            task.setStartedAt(null);
+            task.setCompletedAt(null);
+            task.setErrorMessage(errorMessage);
+            task.setResult(null);
 
             // Record retry transition in audit trail
             TaskAuditEvent event = new TaskAuditEvent(
@@ -193,6 +293,7 @@ public class TaskStateManager {
                     Thread.currentThread().getName(),
                     "Retry granted: transitioned FAILED to PENDING"
             );
+            event.setTask(task);
             task.getAuditTrail().add(event);
 
             log.info("Task [{}] FAILED → PENDING (retry granted, under lock)", taskId);

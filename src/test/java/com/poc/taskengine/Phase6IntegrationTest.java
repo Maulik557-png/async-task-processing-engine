@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 2. Pool Isolation: Bulk emails do not starve or block critical invoice tasks.
  */
 @SpringBootTest
-class Phase6IntegrationTest {
+public class Phase6IntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private TaskService taskService;

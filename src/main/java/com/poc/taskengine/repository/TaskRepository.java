@@ -2,6 +2,7 @@ package com.poc.taskengine.repository;
 
 import com.poc.taskengine.enums.TaskStatus;
 import com.poc.taskengine.model.Task;
+import org.springframework.lang.NonNull;
 
 import java.util.List;
 import java.util.Optional;
@@ -37,7 +38,7 @@ public interface TaskRepository {
      * @param task the task to store; must not be null
      * @return the saved task
      */
-    Task save(Task task);
+    Task save(@NonNull Task task);
 
     /**
      * Look up a task by its unique identifier.
@@ -45,7 +46,12 @@ public interface TaskRepository {
      * @param taskId the UUID string assigned at submission
      * @return an Optional containing the task, or empty if not found
      */
-    Optional<Task> findById(String taskId);
+    Optional<Task> findById(@NonNull String taskId);
+
+    /**
+     * Look up a task by its unique identifier and acquire a pessimistic write lock.
+     */
+    Optional<Task> findByIdForUpdate(@NonNull String taskId);
 
     /**
      * Return all tasks currently held in the store, in no guaranteed order.
@@ -61,20 +67,41 @@ public interface TaskRepository {
      * @param status the status to filter by; must not be null
      * @return a snapshot list; never null, may be empty
      */
-    List<Task> findByStatus(TaskStatus status);
+    List<Task> findByStatus(@NonNull TaskStatus status);
+
+    /**
+     * Look up a task by its optional idempotency key.
+     *
+     * @param idempotencyKey the idempotency key to query
+     * @return an Optional containing the task, or empty if not found
+     */
+    Optional<Task> findByIdempotencyKey(String idempotencyKey);
 
     /**
      * Atomically update the status of a single task.
      *
-     * This method exists as a first-class operation (rather than load + mutate +
-     * save) because:
-     *   - In-memory: allows a compare-and-set to prevent two threads racing to
-     *     change the same task's status simultaneously.
-     *   - JPA: allows a targeted UPDATE ... SET status=? WHERE taskId=? query
-     *     rather than a full entity load, which is safer under optimistic locking.
-     *
      * @param taskId    the task to update; must not be null
      * @param newStatus the target status; must not be null
      */
-    void updateStatus(String taskId, TaskStatus newStatus);
+    void updateStatus(@NonNull String taskId, @NonNull TaskStatus newStatus);
+
+    /**
+     * Atomically update status and startedAt timestamp.
+     */
+    void updateStatusAndStartedAt(@NonNull String taskId, @NonNull TaskStatus newStatus, @NonNull java.time.Instant startedAt);
+
+    /**
+     * Atomically update status, completedAt, and result for successful completion.
+     */
+    void updateStatusAndCompletedSuccess(@NonNull String taskId, @NonNull TaskStatus newStatus, @NonNull java.time.Instant completedAt, String result);
+
+    /**
+     * Atomically update status, completedAt, and errorMessage for completion failures.
+     */
+    void updateStatusAndCompletedFailure(@NonNull String taskId, @NonNull TaskStatus newStatus, @NonNull java.time.Instant completedAt, String errorMessage);
+
+    /**
+     * Atomically transition a task for retry, incrementing count and resetting transient state.
+     */
+    void updateStatusForRetry(@NonNull String taskId, @NonNull TaskStatus newStatus, int retryCount, String errorMessage);
 }

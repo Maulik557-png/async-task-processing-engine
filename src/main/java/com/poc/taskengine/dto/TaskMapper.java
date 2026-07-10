@@ -83,7 +83,8 @@ public final class TaskMapper {
                 request.getPriority() != null ? request.getPriority() : TaskPriority.NORMAL,
                 request.getPayload(),
                 request.getSubmittedBy(),
-                request.getMaxRetries() != null ? request.getMaxRetries() : 3
+                request.getMaxRetries() != null ? request.getMaxRetries() : 3,
+                request.getIdempotencyKey()
         );
     }
 
@@ -96,6 +97,7 @@ public final class TaskMapper {
             com.poc.taskengine.enums.TaskPriority priority,
             String payload,
             String submittedBy,
-            int maxRetries
+            int maxRetries,
+            String idempotencyKey
     ) {}
 }

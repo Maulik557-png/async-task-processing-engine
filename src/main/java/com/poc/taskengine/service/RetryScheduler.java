@@ -3,7 +3,6 @@ package com.poc.taskengine.service;
 import com.poc.taskengine.config.RetryConfig;
 import com.poc.taskengine.model.Task;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
@@ -58,16 +57,14 @@ public class RetryScheduler {
 
     private final ScheduledExecutorService retrySchedulerExecutor;
     private final RetryConfig retryConfig;
-
-    // @Lazy breaks the circular dependency: TaskService → RetryScheduler → TaskService.
-    @Lazy
-    @Autowired
-    private TaskService taskService;
+    private final TaskService taskService;
 
     public RetryScheduler(ScheduledExecutorService retrySchedulerExecutor,
-                          RetryConfig retryConfig) {
+                          RetryConfig retryConfig,
+                          @Lazy TaskService taskService) {
         this.retrySchedulerExecutor = retrySchedulerExecutor;
         this.retryConfig = retryConfig;
+        this.taskService = taskService;
     }
 
     /**

@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.*;
  */
 @SpringBootTest
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-class ConcurrencyStressTest {
+public class ConcurrencyStressTest extends BaseIntegrationTest {
 
     @Autowired
     private TaskService taskService;
@@ -69,8 +69,6 @@ class ConcurrencyStressTest {
             TaskStatus.CANCELLED, TaskStatus.TIMED_OUT
     );
 
-    // ─── Test 1: 200-task / 20-thread stress test ─────────────────────────────
-
     @Test
     @Order(1)
     @DisplayName("4.5 — 200 tasks / 20 threads: all reach terminal state, no task processed twice")
@@ -82,8 +80,6 @@ class ConcurrencyStressTest {
         List<String> submittedIds = Collections.synchronizedList(new ArrayList<>());
         List<Throwable> submissionErrors = Collections.synchronizedList(new ArrayList<>());
 
-        // CountDownLatch: all 20 threads wait at the gate until main thread releases them,
-        // maximising concurrency at submission time.
         CountDownLatch gate = new CountDownLatch(1);
         CountDownLatch doneSubmitting = new CountDownLatch(threadCount);
 
@@ -92,10 +88,9 @@ class ConcurrencyStressTest {
             final int threadIdx = i;
             submitters.submit(() -> {
                 try {
-                    gate.await(); // all threads block here until released simultaneously
+                    gate.await();
                     for (int j = 0; j < tasksPerThread; j++) {
                         try {
-                            // Alternate between task types to exercise multiple code paths.
                             TaskType type = (j % 2 == 0) ? TaskType.DATA_EXPORT : TaskType.EMAIL_NOTIFICATION;
                             String id = taskService.submitTask(
                                     type, TaskPriority.NORMAL,
@@ -104,7 +99,6 @@ class ConcurrencyStressTest {
                                     0);
                             submittedIds.add(id);
                         } catch (TaskQueueFullException e) {
-                            // Expected when Semaphore is at capacity — retry after a brief pause.
                             Thread.sleep(200);
                             try {
                                 String id = taskService.submitTask(
@@ -112,7 +106,6 @@ class ConcurrencyStressTest {
                                         "{\"retry\":true}", "stress-test-retry", 0);
                                 submittedIds.add(id);
                             } catch (TaskQueueFullException ex2) {
-                                // If still full, count it as an unsubmitted task.
                                 submissionErrors.add(ex2);
                             }
                         }
@@ -126,7 +119,6 @@ class ConcurrencyStressTest {
             });
         }
 
-        // Release all submitter threads at the same time.
         gate.countDown();
         boolean allSubmitted = doneSubmitting.await(60, TimeUnit.SECONDS);
         submitters.shutdown();
@@ -136,9 +128,6 @@ class ConcurrencyStressTest {
                 + " (rejected: " + submissionErrors.size() + ")"
                 + " (allSubmitted within 60s: " + allSubmitted + ")");
 
-        // Each task takes 500–2500ms. With 5 threads and up to 200 tasks, worst case:
-        //   200 tasks / 5 threads = 40 batches × 2.5s = 100s.
-        // We wait up to 120s to be safe.
         List<String> idsToWaitFor = new ArrayList<>(submittedIds);
         long deadline = System.currentTimeMillis() + 120_000;
         while (System.currentTimeMillis() < deadline) {
@@ -153,7 +142,6 @@ class ConcurrencyStressTest {
             Thread.sleep(500);
         }
 
-        // ── Assertion 1: All submitted tasks in terminal state ────────────────
         List<Task> allTasks = submittedIds.stream()
                 .map(id -> taskRepository.findById(id).orElseThrow())
                 .collect(Collectors.toList());
@@ -171,13 +159,11 @@ class ConcurrencyStressTest {
                 .as("All submitted tasks must reach a terminal state within 120s")
                 .isEmpty();
 
-        // ── Assertion 2: Uniqueness — no task ID submitted twice ─────────────
         long uniqueIds = submittedIds.stream().distinct().count();
         assertThat(uniqueIds)
                 .as("Each submitted ID must be unique — no task enqueued twice")
                 .isEqualTo(submittedIds.size());
 
-        // ── Assertion 3: No task stuck IN_PROGRESS ────────────────────────────
         long inProgress = allTasks.stream()
                 .filter(t -> t.getStatus() == TaskStatus.IN_PROGRESS)
                 .count();
@@ -188,21 +174,10 @@ class ConcurrencyStressTest {
         System.out.println("[STRESS] ✓ " + allTasks.size() + " tasks, all terminal. Unique IDs: " + uniqueIds);
     }
 
-    // ─── Test 2: Atomic state-machine guard ───────────────────────────────────
-    //
-    // WHY we test TaskStateManager directly (not via TaskService.submitTask):
-    //   When a task is submitted via TaskService, the thread pool immediately picks
-    //   it up and transitions PENDING → IN_PROGRESS. By the time our two race threads
-    //   start, the pool worker has already won the only valid PENDING→IN_PROGRESS
-    //   transition, making the test non-deterministic and impossible to set up reliably.
-    //   By inserting a PENDING task directly into the repository and racing on
-    //   TaskStateManager, we control the exact moment the race begins.
-
     @Test
     @Order(2)
     @DisplayName("4.2 — State machine guard: racing two threads on same task — exactly one wins")
     void stateMachineGuard_racingTransitions() throws Exception {
-        // Insert a PENDING task directly — do NOT submit via TaskService (pool picks it up instantly).
         Task task = Task.builder()
                 .taskId(UUID.randomUUID().toString())
                 .type(TaskType.DATA_EXPORT)
@@ -217,8 +192,6 @@ class ConcurrencyStressTest {
         taskRepository.save(task);
         final String taskId = task.getTaskId();
 
-        // Both threads try to move PENDING → IN_PROGRESS simultaneously.
-        // Exactly one must succeed; the other must throw InvalidTaskStateException.
         CountDownLatch gate = new CountDownLatch(1);
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger failCount = new AtomicInteger(0);
@@ -226,7 +199,7 @@ class ConcurrencyStressTest {
 
         Runnable competitor = () -> {
             try {
-                gate.await(); // synchronise start
+                gate.await(); 
                 stateManager.transitionStatus(taskId, TaskStatus.PENDING, TaskStatus.IN_PROGRESS);
                 successCount.incrementAndGet();
                 System.out.println("[RACE] " + Thread.currentThread().getName() + " WON");
@@ -244,7 +217,7 @@ class ConcurrencyStressTest {
         Thread t2 = new Thread(competitor, "race-thread-2");
         t1.start();
         t2.start();
-        gate.countDown(); // release both simultaneously
+        gate.countDown();
         t1.join(5000);
         t2.join(5000);
 
@@ -252,9 +225,6 @@ class ConcurrencyStressTest {
                 + ", rejections=" + failCount.get()
                 + ", messages=" + failMessages);
 
-        // Per TaskStateManager: one thread acquires the ReentrantLock first,
-        // verifies PENDING, writes IN_PROGRESS. The second acquires the lock after,
-        // sees IN_PROGRESS (not PENDING), and throws InvalidTaskStateException.
         assertThat(successCount.get())
                 .as("Exactly one thread must win the PENDING→IN_PROGRESS race")
                 .isEqualTo(1);
@@ -265,7 +235,6 @@ class ConcurrencyStressTest {
                 .as("Rejection message must identify the conflicting status")
                 .containsIgnoringCase("IN_PROGRESS");
 
-        // Verify the final state in the repository.
         Task raceTask = taskRepository.findById(taskId).orElseThrow();
         assertThat(raceTask.getStatus())
                 .as("Task must be IN_PROGRESS after the race")
@@ -274,8 +243,6 @@ class ConcurrencyStressTest {
         System.out.println("[RACE] ✓ Lock guard proved: only one transition succeeded");
     }
 
-    // ─── Test 3: Semaphore rate limiting ──────────────────────────────────────
-
     @Test
     @Order(3)
     @DisplayName("4.3 — Rate limiting: submitting beyond capacity throws TaskQueueFullException (503)")
@@ -283,7 +250,6 @@ class ConcurrencyStressTest {
         int available = taskService.availablePermits();
         System.out.println("[RATE] Available permits at test start: " + available);
 
-        // Consume all remaining permits.
         List<String> floodIds = new ArrayList<>();
         int rejectedCount = 0;
         for (int i = 0; i < available + 1; i++) {
@@ -301,7 +267,6 @@ class ConcurrencyStressTest {
         }
 
         if (taskService.availablePermits() == 0) {
-            // Verify the very next call is rejected.
             assertThatThrownBy(() ->
                     taskService.submitTask(TaskType.DATA_EXPORT, TaskPriority.LOW,
                             "{}", "over-limit", 0))
@@ -309,21 +274,16 @@ class ConcurrencyStressTest {
                     .isInstanceOf(TaskQueueFullException.class);
             System.out.println("[RATE] ✓ 503 condition confirmed — queue full exception thrown");
         } else {
-            // Permits freed before we could exhaust them (pool processed them fast).
             System.out.println("[RATE] Permits freed too fast for this test to be deterministic"
                     + " — verifying at least " + rejectedCount + " rejection(s) occurred");
-            // This is acceptable — it means the rate limiter is working AND releasing correctly.
         }
     }
 
-    // ─── Test 4: CompletableFuture pipeline with injected failure ─────────────
 
     @Test
     @Order(4)
     @DisplayName("4.4 — REPORT_GENERATION: injected PDF failure → task FAILED via exceptionally()")
     void reportGenerationPipeline_injectedFailure() throws Exception {
-        // Test 3 may have filled the Semaphore with flood tasks still running.
-        // Wait for at least one permit to free before submitting.
         waitForPermit(30_000);
         ReportGenerationPipeline.INJECT_PDF_FAILURE = true;
         try {
@@ -347,14 +307,12 @@ class ConcurrencyStressTest {
         }
     }
 
-    // ─── Test 5: REPORT_GENERATION happy path ─────────────────────────────────
 
     @Test
     @Order(5)
     @DisplayName("4.4 — REPORT_GENERATION: happy path — all 4 stages complete → COMPLETED")
     void reportGenerationPipeline_happyPath() throws Exception {
         ReportGenerationPipeline.INJECT_PDF_FAILURE = false;
-        // Wait for a free permit in case previous tests still hold slots.
         waitForPermit(30_000);
 
         String id = taskService.submitTask(
@@ -373,12 +331,6 @@ class ConcurrencyStressTest {
         System.out.println("[PIPELINE] ✓ Task [" + id + "] result=" + task.getResult());
     }
 
-    // ─── Helpers ──────────────────────────────────────────────────────────────
-
-    /**
-     * Block until at least one Semaphore permit is available (or timeout).
-     * Used by pipeline tests to avoid racing with flood tasks from Test 3.
-     */
     private void waitForPermit(long timeoutMs) throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (taskService.availablePermits() == 0 && System.currentTimeMillis() < deadline) {

@@ -14,7 +14,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 
 /**
  * Thread-safe registry that captures engine-wide performance and queue metrics.
@@ -85,7 +84,7 @@ public class MetricsRegistry {
         }
         allTasks.forEach(t -> {
             if (t.getStatus() != null) {
-                tasksByStatus.merge(t.getStatus().name(), 1L, Long::sum);
+                tasksByStatus.merge(t.getStatus().name(), 1L, (a, b) -> a + b);
             }
         });
 
@@ -95,7 +94,7 @@ public class MetricsRegistry {
         }
         allTasks.forEach(t -> {
             if (t.getType() != null) {
-                tasksByType.merge(t.getType().name(), 1L, Long::sum);
+                tasksByType.merge(t.getType().name(), 1L, (a, b) -> a + b);
             }
         });
 

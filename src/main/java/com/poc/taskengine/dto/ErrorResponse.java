@@ -1,52 +1,30 @@
 package com.poc.taskengine.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Getter;
 import java.time.Instant;
 
 /**
  * Uniform error response shape returned by GlobalExceptionHandler for every
  * non-2xx response.
- *
- * Design decision — why a dedicated ErrorResponse class and not Spring's
- * default ProblemDetail (RFC 7807)?
- *   ProblemDetail is available in Spring 6 / Boot 3 and is a valid choice, but
- *   it requires the caller to understand the RFC 7807 "type" URI convention.
- *   Our explicit ErrorResponse is simpler, gives the team full control over the
- *   field names, and is identical in shape to what most Java backend interviews
- *   and production codebases use. We can migrate to ProblemDetail in a later
- *   phase if required.
- *
- * Fields mirror what the Phase 3 spec requires:
- *   { timestamp, status, error, message, path }
  */
+@Getter
+@Schema(description = "Standard structure returned when an API request fails")
 public class ErrorResponse {
 
-    /**
-     * When the error was generated — ISO-8601 UTC string via Jackson's
-     * default Instant serialiser. Lets the caller correlate with server logs.
-     */
+    @Schema(description = "Timestamp when the error occurred", example = "2026-07-09T14:45:15.641Z")
     private final Instant timestamp;
 
-    /**
-     * Raw HTTP status code (e.g., 400, 404, 409, 500).
-     */
+    @Schema(description = "HTTP status code of the error", example = "400")
     private final int status;
 
-    /**
-     * Short, machine-readable label for the HTTP status reason phrase
-     * (e.g., "Bad Request", "Not Found").
-     */
+    @Schema(description = "Short name of the HTTP error type", example = "Bad Request")
     private final String error;
 
-    /**
-     * Human-readable explanation of what went wrong — safe to surface to the
-     * API caller. Must never include a stack trace.
-     */
+    @Schema(description = "Detail message explaining the failure reason", example = "submittedBy is required and must not be blank")
     private final String message;
 
-    /**
-     * The request URI that triggered the error, populated from
-     * HttpServletRequest.getRequestURI() in the handler.
-     */
+    @Schema(description = "Request path that triggered the error", example = "/api/v1/tasks")
     private final String path;
 
     public ErrorResponse(int status, String error, String message, String path) {
@@ -56,12 +34,4 @@ public class ErrorResponse {
         this.message = message;
         this.path = path;
     }
-
-    // ── Getters only — this DTO is write-once, read-many ─────────────────────
-
-    public Instant getTimestamp() { return timestamp; }
-    public int getStatus()        { return status; }
-    public String getError()      { return error; }
-    public String getMessage()    { return message; }
-    public String getPath()       { return path; }
 }

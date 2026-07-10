@@ -19,13 +19,10 @@ import java.util.concurrent.ThreadLocalRandom;
  */
 @Slf4j
 @Component
+@lombok.RequiredArgsConstructor
 public class EmailNotificationHandler implements TaskHandler {
 
     private final ObjectMapper objectMapper;
-
-    public EmailNotificationHandler(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-    }
 
     @Override
     public TaskType getSupportedType() {

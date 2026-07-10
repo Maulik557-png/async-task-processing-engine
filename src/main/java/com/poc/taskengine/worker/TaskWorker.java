@@ -2,7 +2,6 @@ package com.poc.taskengine.worker;
 
 import com.poc.taskengine.enums.TaskStatus;
 import com.poc.taskengine.model.Task;
-import com.poc.taskengine.repository.TaskRepository;
 import com.poc.taskengine.service.CircuitBreakerRegistry;
 import com.poc.taskengine.service.MetricsRegistry;
 import com.poc.taskengine.service.RetryScheduler;
@@ -12,7 +11,6 @@ import org.slf4j.MDC;
 
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -63,22 +61,18 @@ public class TaskWorker implements Runnable {
             new ConcurrentHashMap<>();
 
     private final Task task;
-    private final TaskRepository taskRepository;
     private final TaskStateManager stateManager;
-    private final Executor executor;
     private final RetryScheduler retryScheduler;
     private final CircuitBreakerRegistry circuitBreaker;
     private final TaskHandlerRegistry registry;
     private final MetricsRegistry metricsRegistry;
 
-    public TaskWorker(Task task, TaskRepository taskRepository,
-                      TaskStateManager stateManager, Executor executor,
+    public TaskWorker(Task task,
+                      TaskStateManager stateManager,
                       RetryScheduler retryScheduler, CircuitBreakerRegistry circuitBreaker,
                       TaskHandlerRegistry registry, MetricsRegistry metricsRegistry) {
         this.task = task;
-        this.taskRepository = taskRepository;
         this.stateManager = stateManager;
-        this.executor = executor;
         this.retryScheduler = retryScheduler;
         this.circuitBreaker = circuitBreaker;
         this.registry = registry;
@@ -98,17 +92,17 @@ public class TaskWorker implements Runnable {
             // ── Transition: PENDING → IN_PROGRESS ──────────────────────────────────
             // CRITICAL: Do NOT call task.setStatus(IN_PROGRESS) before this call.
             // See class Javadoc for the reference-aliasing explanation.
+            Instant startedAt = Instant.now();
             try {
-                stateManager.transitionStatus(taskId, TaskStatus.PENDING, TaskStatus.IN_PROGRESS);
+                stateManager.transitionStatusAndStartedAt(taskId, TaskStatus.PENDING, TaskStatus.IN_PROGRESS, startedAt);
+                task.setStatus(TaskStatus.IN_PROGRESS);
+                task.setStartedAt(startedAt);
             } catch (Exception e) {
                 // Task was cancelled between enqueue and dequeue — skip silently.
                 log.warn("[{}] Task [{}] skipping — could not transition PENDING→IN_PROGRESS: {}",
                         threadName, taskId, e.getMessage());
                 return;
             }
-
-            // Set startedAt AFTER the transition succeeds — we own this task now.
-            task.setStartedAt(Instant.now());
 
             log.info("[{}] Task [{}] (type={}, priority={}, attempt={}/{}) → IN_PROGRESS",
                     threadName, taskId, task.getType(), task.getPriority(),
@@ -131,9 +125,12 @@ public class TaskWorker implements Runnable {
                 // If the handler did not already transition the status (e.g. ReportGenerationPipeline transitions internally),
                 // we transition to COMPLETED here.
                 if (task.getStatus() == TaskStatus.IN_PROGRESS) {
-                    task.setCompletedAt(Instant.now());
-                    task.setResult(result.getResult());
-                    stateManager.transitionStatus(taskId, TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED);
+                    Instant completedAt = Instant.now();
+                    String resultStr = result.getResult();
+                    stateManager.transitionStatusAndCompletedSuccess(taskId, TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED, completedAt, resultStr);
+                    task.setStatus(TaskStatus.COMPLETED);
+                    task.setCompletedAt(completedAt);
+                    task.setResult(resultStr);
 
                     // Circuit breaker: reset consecutive failure counter on success.
                     circuitBreaker.recordSuccess(task.getType());
@@ -174,12 +171,14 @@ public class TaskWorker implements Runnable {
      *   2. circuitBreaker.recordFailure(type)
      */
     private void markFailed(String taskId, String threadName, String errorMessage) {
-        task.setCompletedAt(Instant.now());
-        task.setErrorMessage(errorMessage);
         // Transition IN_PROGRESS → FAILED (if not already transitioned to FAILED, e.g. by pipeline error handler).
         if (task.getStatus() == TaskStatus.IN_PROGRESS) {
             try {
-                stateManager.transitionStatus(taskId, TaskStatus.IN_PROGRESS, TaskStatus.FAILED, errorMessage);
+                Instant completedAt = Instant.now();
+                stateManager.transitionStatusAndCompletedFailure(taskId, TaskStatus.IN_PROGRESS, TaskStatus.FAILED, completedAt, errorMessage);
+                task.setStatus(TaskStatus.FAILED);
+                task.setCompletedAt(completedAt);
+                task.setErrorMessage(errorMessage);
             } catch (Exception ex) {
                 log.warn("[{}] Task [{}] could not be marked FAILED: {}", threadName, taskId, ex.getMessage());
                 return; // Cannot proceed with retry if state transition failed.

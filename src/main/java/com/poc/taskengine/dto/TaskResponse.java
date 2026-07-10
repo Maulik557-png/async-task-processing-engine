@@ -3,79 +3,57 @@ package com.poc.taskengine.dto;
 import com.poc.taskengine.enums.TaskPriority;
 import com.poc.taskengine.enums.TaskStatus;
 import com.poc.taskengine.enums.TaskType;
+import com.poc.taskengine.model.TaskAuditEvent;
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 import java.util.List;
-import com.poc.taskengine.model.TaskAuditEvent;
 
 /**
  * Outbound DTO returned by every task-related endpoint.
- *
- * Architectural rule: this is what the client sees — the Task domain model is
- * never exposed directly. If we add internal fields to Task (e.g., retry metadata,
- * internal flags), they stay hidden here unless explicitly included.
- *
- * All timestamp fields use Instant, which Jackson serialises to ISO-8601 UTC
- * strings (e.g., "2026-07-01T15:04:05.123456789Z") by default. This avoids
- * timezone ambiguity when clients live in different regions.
- *
- * Fields map 1-to-1 to the Phase 3 spec:
- *   taskId, status, type, priority, createdAt, startedAt, completedAt,
- *   result, errorMessage, retryCount
  */
+@Getter
+@Builder
+@NoArgsConstructor(access = AccessLevel.PRIVATE)
+@AllArgsConstructor(access = AccessLevel.PRIVATE)
+@Schema(description = "Details and status of a processed or pending task")
 public class TaskResponse {
 
+    @Schema(description = "UUID identifying the task", example = "e04df2e9-ef12-421b-873b-fde5bc632a4e")
     private String taskId;
+
+    @Schema(description = "Current lifecycle status of the task", example = "COMPLETED")
     private TaskStatus status;
+
+    @Schema(description = "Type/Category of task logic to run", example = "DATA_EXPORT")
     private TaskType type;
+
+    @Schema(description = "Queue execution priority level", example = "NORMAL")
     private TaskPriority priority;
+
+    @Schema(description = "Timestamp when the task was initially submitted", example = "2026-07-09T14:25:19.123Z")
     private Instant createdAt;
+
+    @Schema(description = "Timestamp when task execution actually started", example = "2026-07-09T14:25:20.123Z")
     private Instant startedAt;
+
+    @Schema(description = "Timestamp when task execution ended in terminal state", example = "2026-07-09T14:25:22.123Z")
     private Instant completedAt;
+
+    @Schema(description = "Task output payload returned by the task handler (JSON string)", example = "{\"exportedRows\": 150}")
     private String result;
+
+    @Schema(description = "Human-readable error details if execution failed", example = "Connection timeout")
     private String errorMessage;
+
+    @Schema(description = "Number of automatic retries performed so far", example = "1")
     private int retryCount;
+
+    @Schema(description = "Detailed list of every state transition of this task")
     private List<TaskAuditEvent> auditTrail;
-
-    // ── Private constructor — callers must go through TaskMapper ─────────────
-    // This prevents ad-hoc construction that might forget to copy a field.
-    private TaskResponse() {}
-
-    // ── Static builder ────────────────────────────────────────────────────────
-    // Mirrors the Task.builder() pattern so mappers can set fields fluently
-    // without positional argument ordering mistakes.
-
-    public static Builder builder() { return new Builder(); }
-
-    public static class Builder {
-        private final TaskResponse response = new TaskResponse();
-
-        public Builder taskId(String v)           { response.taskId = v;        return this; }
-        public Builder status(TaskStatus v)        { response.status = v;        return this; }
-        public Builder type(TaskType v)            { response.type = v;          return this; }
-        public Builder priority(TaskPriority v)    { response.priority = v;      return this; }
-        public Builder createdAt(Instant v)        { response.createdAt = v;     return this; }
-        public Builder startedAt(Instant v)        { response.startedAt = v;     return this; }
-        public Builder completedAt(Instant v)      { response.completedAt = v;   return this; }
-        public Builder result(String v)            { response.result = v;        return this; }
-        public Builder errorMessage(String v)      { response.errorMessage = v;  return this; }
-        public Builder retryCount(int v)           { response.retryCount = v;    return this; }
-        public Builder auditTrail(List<TaskAuditEvent> v) { response.auditTrail = v; return this; }
-
-        public TaskResponse build() { return response; }
-    }
-
-    // ── Getters only — response is immutable once built ───────────────────────
-
-    public String getTaskId()           { return taskId; }
-    public TaskStatus getStatus()       { return status; }
-    public TaskType getType()           { return type; }
-    public TaskPriority getPriority()   { return priority; }
-    public Instant getCreatedAt()       { return createdAt; }
-    public Instant getStartedAt()       { return startedAt; }
-    public Instant getCompletedAt()     { return completedAt; }
-    public String getResult()           { return result; }
-    public String getErrorMessage()     { return errorMessage; }
-    public int getRetryCount()          { return retryCount; }
-    public List<TaskAuditEvent> getAuditTrail() { return auditTrail; }
 }
