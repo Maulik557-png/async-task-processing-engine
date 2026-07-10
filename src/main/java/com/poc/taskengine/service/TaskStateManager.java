@@ -5,12 +5,14 @@ import com.poc.taskengine.exception.InvalidTaskStateException;
 import com.poc.taskengine.exception.TaskNotFoundException;
 import com.poc.taskengine.model.Task;
 import com.poc.taskengine.repository.TaskRepository;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.Set;
 import com.poc.taskengine.model.TaskAuditEvent;
 import java.util.concurrent.ConcurrentHashMap;
@@ -65,9 +67,8 @@ public class TaskStateManager {
 
     private final TaskRepository taskRepository;
 
-    private final ConcurrentHashMap<String, ReentrantLock> locks = new ConcurrentHashMap<>();
+    private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
 
-    /** Terminal statuses — once reached, no further transitions are permitted. */
     private static final Set<TaskStatus> TERMINAL_STATUSES = Set.of(
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
@@ -113,7 +114,6 @@ public class TaskStateManager {
 
             TaskStatus currentStatus = task.getStatus();
 
-            // Guard 1: hard stop on terminal states.
             if (TERMINAL_STATUSES.contains(currentStatus)) {
                 log.warn("Transition rejected for task [{}]: already terminal {} — refused {}",
                         taskId, currentStatus, newStatus);
@@ -121,7 +121,6 @@ public class TaskStateManager {
                         "transition to " + newStatus + " (task is already terminal)");
             }
 
-            // Guard 2: expected-status check.
             if (currentStatus != expectedStatus) {
                 log.warn("Transition rejected for task [{}]: expected {} but found {} — refused {}",
                         taskId, expectedStatus, currentStatus, newStatus);

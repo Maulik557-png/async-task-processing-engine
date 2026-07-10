@@ -34,7 +34,6 @@ import java.util.stream.Collectors;
  *
  * Exception coverage — ordered from most specific to least specific:
  *   TaskNotFoundException         → 404 Not Found
- *   TaskAlreadyExistsException    → 409 Conflict
  *   InvalidTaskStateException     → 400 Bad Request
  *   TaskQueueFullException        → 503 Service Unavailable
  *   MethodArgumentNotValidException → 400 Bad Request (Bean Validation failures)
@@ -50,17 +49,6 @@ import java.util.stream.Collectors;
 public class GlobalExceptionHandler {
 
     // ─── 503 Service Unavailable — rate limit reached ─────────────────────────
-    //
-    // WHY 503 and not 429 Too Many Requests?
-    //   429 implies the CLIENT is sending too fast and should slow down.
-    //   503 implies the SERVER is temporarily at capacity. Our limit is on
-    //   in-flight task slots (a server resource), not per-client rate.
-    //
-    // WHY Retry-After: 5?
-    //   A reasonable hint: tasks typically complete in 0.5–2.5 s; after 5 s
-    //   at least some slots should have freed. The client is encouraged to retry
-    //   rather than give up. RFC 7231 defines Retry-After as advisory.
-
     @ExceptionHandler(TaskQueueFullException.class)
     public ResponseEntity<ErrorResponse> handleQueueFull(
             TaskQueueFullException ex,
@@ -82,12 +70,6 @@ public class GlobalExceptionHandler {
     }
 
     // ─── 503 Service Unavailable — executor rejected task (shutdown or overflow) ─
-    //
-    // Distinct from TaskQueueFullException (Semaphore gate, pre-persistence):
-    //   TaskQueueFullException: Semaphore.tryAcquire() failed — too many in-flight tasks.
-    //   TaskSubmissionRejectedException: executor.execute() was rejected — pool shut down
-    //     or the rare queue-overflow path that bypasses the Semaphore.
-
     @ExceptionHandler(TaskSubmissionRejectedException.class)
     public ResponseEntity<ErrorResponse> handleSubmissionRejected(
             TaskSubmissionRejectedException ex,
@@ -109,7 +91,6 @@ public class GlobalExceptionHandler {
     }
 
     // ─── 404 Not Found ────────────────────────────────────────────────────────
-
     @ExceptionHandler(TaskNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleTaskNotFound(
             TaskNotFoundException ex, HttpServletRequest request) {
@@ -125,25 +106,7 @@ public class GlobalExceptionHandler {
                         request.getRequestURI()));
     }
 
-    // ─── 409 Conflict ─────────────────────────────────────────────────────────
-
-    @ExceptionHandler(TaskAlreadyExistsException.class)
-    public ResponseEntity<ErrorResponse> handleTaskAlreadyExists(
-            TaskAlreadyExistsException ex, HttpServletRequest request) {
-
-        log.warn("Task already exists: taskId={}, path={}", ex.getTaskId(), request.getRequestURI());
-
-        return ResponseEntity
-                .status(HttpStatus.CONFLICT)
-                .body(new ErrorResponse(
-                        HttpStatus.CONFLICT.value(),
-                        "Conflict",
-                        ex.getMessage(),
-                        request.getRequestURI()));
-    }
-
     // ─── 400 Bad Request — invalid state transition ───────────────────────────
-
     @ExceptionHandler(InvalidTaskStateException.class)
     public ResponseEntity<ErrorResponse> handleInvalidTaskState(
             InvalidTaskStateException ex, HttpServletRequest request) {
@@ -161,13 +124,6 @@ public class GlobalExceptionHandler {
     }
 
     // ─── 400 Bad Request — malformed JSON body ────────────────────────────────
-    //
-    // Triggered when the request body is syntactically invalid JSON (e.g., missing
-    // quotes, trailing commas). Jackson throws JsonParseException, which Spring wraps
-    // in HttpMessageNotReadableException before it reaches any handler.
-    // Without this explicit handler the exception falls through to the 500 catch-all,
-    // which would mislead the caller into thinking it's a server fault.
-
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ErrorResponse> handleMalformedBody(
             HttpMessageNotReadableException ex, HttpServletRequest request) {
@@ -184,13 +140,6 @@ public class GlobalExceptionHandler {
     }
 
     // ─── 400 Bad Request — Bean Validation failure (@Valid) ───────────────────
-
-    //
-    // Triggered by @Valid on the controller method parameter when a constraint
-    // annotation (@NotNull, @NotBlank, @Min) is violated.
-    // We collect all field errors into a single comma-separated message so the
-    // caller can fix all problems in one round trip.
-
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidationFailure(
             MethodArgumentNotValidException ex, HttpServletRequest request) {
@@ -211,11 +160,6 @@ public class GlobalExceptionHandler {
     }
 
     // ─── 400 Bad Request — enum/type conversion failure ───────────────────────
-    //
-    // Triggered when a @RequestParam or @PathVariable cannot be converted to
-    // its declared type (e.g., ?status=FOOBAR when TaskStatus enum has no FOOBAR).
-    // Without this handler, Spring returns its default HTML error page.
-
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ErrorResponse> handleTypeMismatch(
             MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
@@ -235,17 +179,10 @@ public class GlobalExceptionHandler {
     }
 
     // ─── 500 Internal Server Error — catch-all ────────────────────────────────
-    //
-    // The final safety net. Logs the full stack trace server-side but never
-    // lets it reach the client response body. "Something went wrong" is
-    // intentionally vague — leaking internal error details is a security risk.
-
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(
             Exception ex, HttpServletRequest request) {
 
-        // Log at ERROR level with full stack trace — this is the one place where
-        // we WANT the trace, because unexpected exceptions need to be diagnosed.
         log.error("Unexpected error: path={}", request.getRequestURI(), ex);
 
         return ResponseEntity

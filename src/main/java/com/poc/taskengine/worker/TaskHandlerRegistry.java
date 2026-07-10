@@ -38,4 +38,11 @@ public class TaskHandlerRegistry {
         }
         return handler;
     }
+
+    /**
+     * Programmatically registers a handler (primarily used in testing).
+     */
+    public void registerHandler(TaskType type, TaskHandler handler) {
+        handlers.put(type, handler);
+    }
 }

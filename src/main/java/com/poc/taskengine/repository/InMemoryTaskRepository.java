@@ -5,6 +5,7 @@ import com.poc.taskengine.model.Task;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
@@ -20,13 +21,10 @@ import java.util.concurrent.ConcurrentHashMap;
 @Repository
 public class InMemoryTaskRepository implements TaskRepository {
 
-    // ConcurrentHashMap initial capacity 64 — generous starting size avoids
-    // resize rehashing during the burst submission workload in Phase 2's test.
-    // Load factor 0.75 (default) gives a good balance between space and rehash frequency.
     private final ConcurrentHashMap<String, Task> store = new ConcurrentHashMap<>(64);
 
     @Override
-    public Task save(Task task) {
+    public Task save(@NonNull Task task) {
         String key = task.getIdempotencyKey();
         if (key != null && !key.trim().isEmpty()) {
             for (Task t : store.values()) {
@@ -41,12 +39,12 @@ public class InMemoryTaskRepository implements TaskRepository {
     }
 
     @Override
-    public Optional<Task> findById(String taskId) {
+    public Optional<Task> findById(@NonNull String taskId) {
         return Optional.ofNullable(store.get(taskId));
     }
 
     @Override
-    public Optional<Task> findByIdForUpdate(String taskId) {
+    public Optional<Task> findByIdForUpdate(@NonNull String taskId) {
         return findById(taskId);
     }
 
@@ -56,7 +54,7 @@ public class InMemoryTaskRepository implements TaskRepository {
     }
 
     @Override
-    public List<Task> findByStatus(TaskStatus status) {
+    public List<Task> findByStatus(@NonNull TaskStatus status) {
         List<Task> result = new ArrayList<>();
         for (Task task : store.values()) {
             if (task.getStatus() == status) {
@@ -77,7 +75,7 @@ public class InMemoryTaskRepository implements TaskRepository {
     }
 
     @Override
-    public void updateStatus(String taskId, TaskStatus newStatus) {
+    public void updateStatus(@NonNull String taskId, @NonNull TaskStatus newStatus) {
         store.compute(taskId, (id, existing) -> {
             if (existing == null) {
                 log.warn("updateStatus called on unknown taskId [{}] — ignoring", taskId);
@@ -90,7 +88,7 @@ public class InMemoryTaskRepository implements TaskRepository {
     }
 
     @Override
-    public void updateStatusAndStartedAt(String taskId, TaskStatus newStatus, java.time.Instant startedAt) {
+    public void updateStatusAndStartedAt(@NonNull String taskId, @NonNull TaskStatus newStatus, @NonNull java.time.Instant startedAt) {
         store.compute(taskId, (id, existing) -> {
             if (existing == null) {
                 log.warn("updateStatusAndStartedAt called on unknown taskId [{}] — ignoring", taskId);
@@ -104,7 +102,7 @@ public class InMemoryTaskRepository implements TaskRepository {
     }
 
     @Override
-    public void updateStatusAndCompletedSuccess(String taskId, TaskStatus newStatus, java.time.Instant completedAt, String result) {
+    public void updateStatusAndCompletedSuccess(@NonNull String taskId, @NonNull TaskStatus newStatus, @NonNull java.time.Instant completedAt, String result) {
         store.compute(taskId, (id, existing) -> {
             if (existing == null) {
                 log.warn("updateStatusAndCompletedSuccess called on unknown taskId [{}] — ignoring", taskId);
@@ -119,7 +117,7 @@ public class InMemoryTaskRepository implements TaskRepository {
     }
 
     @Override
-    public void updateStatusAndCompletedFailure(String taskId, TaskStatus newStatus, java.time.Instant completedAt, String errorMessage) {
+    public void updateStatusAndCompletedFailure(@NonNull String taskId, @NonNull TaskStatus newStatus, @NonNull java.time.Instant completedAt, String errorMessage) {
         store.compute(taskId, (id, existing) -> {
             if (existing == null) {
                 log.warn("updateStatusAndCompletedFailure called on unknown taskId [{}] — ignoring", taskId);
@@ -134,7 +132,7 @@ public class InMemoryTaskRepository implements TaskRepository {
     }
 
     @Override
-    public void updateStatusForRetry(String taskId, TaskStatus newStatus, int retryCount, String errorMessage) {
+    public void updateStatusForRetry(@NonNull String taskId, @NonNull TaskStatus newStatus, int retryCount, String errorMessage) {
         store.compute(taskId, (id, existing) -> {
             if (existing == null) {
                 log.warn("updateStatusForRetry called on unknown taskId [{}] — ignoring", taskId);

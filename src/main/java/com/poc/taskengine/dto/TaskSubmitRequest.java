@@ -2,6 +2,7 @@ package com.poc.taskengine.dto;
 
 import com.poc.taskengine.enums.TaskPriority;
 import com.poc.taskengine.enums.TaskType;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -10,58 +11,30 @@ import lombok.Setter;
 
 /**
  * Inbound DTO for the POST /api/v1/tasks endpoint.
- *
- * Architectural rule: this class is the only thing the controller accepts.
- * The Task domain model must never be deserialized directly from an HTTP body.
- * Mapping from this DTO to Task happens in TaskMapper, not in the controller.
- *
- * Validation annotations (@NotNull, @NotBlank, @Min) are evaluated by
- * Spring's @Valid mechanism before the controller method body runs.
- * A constraint violation produces a MethodArgumentNotValidException which
- * GlobalExceptionHandler converts to a structured 400 response.
  */
 @Getter
 @Setter
+@Schema(description = "Payload required to submit a new task")
 public class TaskSubmitRequest {
 
-    /**
-     * The category of work to perform.
-     * Required — without it the engine cannot route the task to the right worker.
-     */
     @NotNull(message = "type is required")
+    @Schema(description = "The type of task to submit", example = "DATA_EXPORT", requiredMode = Schema.RequiredMode.REQUIRED)
     private TaskType type;
 
-    /**
-     * Queue priority for this task.
-     * Optional — defaults to NORMAL if omitted by the caller (applied in TaskMapper).
-     * Not marked @NotNull deliberately: we want to allow the caller to omit it.
-     */
+    @Schema(description = "Queue execution priority for this task (defaults to NORMAL)", example = "NORMAL")
     private TaskPriority priority;
 
-    /**
-     * Caller-supplied input, typically JSON-encoded.
-     * Optional: some task types carry no input (e.g., a nightly report triggered by schedule).
-     */
+    @Schema(description = "Task payload parameters, typically a JSON string", example = "{\"format\": \"csv\"}")
     private String payload;
 
-    /**
-     * Identity of the submitter — user ID, service name, or API key.
-     * Required for audit trail: we must always know who submitted a task.
-     */
     @NotBlank(message = "submittedBy is required and must not be blank")
+    @Schema(description = "Name/identifier of the user or system submitting this task", example = "test-system", requiredMode = Schema.RequiredMode.REQUIRED)
     private String submittedBy;
 
-    /**
-     * Maximum number of automatic retries allowed before the task is marked
-     * permanently FAILED. Must be zero or positive.
-     * Optional — defaults to 3 if omitted (applied in TaskMapper).
-     * Not marked @NotNull: zero is a valid explicit value (no retries).
-     */
     @Min(value = 0, message = "maxRetries must be 0 or greater")
+    @Schema(description = "Maximum execution retry attempts for transient errors (defaults to 3)", example = "3")
     private Integer maxRetries;
 
-    /**
-     * Optional idempotency key to prevent double submissions.
-     */
+    @Schema(description = "Optional idempotency key to prevent duplicate processing of the same submit", example = "idemp-key-12345")
     private String idempotencyKey;
 }

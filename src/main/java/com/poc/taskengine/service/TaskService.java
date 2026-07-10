@@ -15,6 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
 
@@ -52,15 +53,11 @@ import java.util.concurrent.TimeUnit;
  *   waiting. It can afford to block briefly (up to permitTimeoutSeconds) until a permit
  *   frees. If it times out, the task is marked FAILED permanently.
  *
- * ── cancelTask() shutdown guard ──────────────────────────────────────────────
- * If the executor is shut down, cancelTask is still available (it doesn't enqueue anything).
- * No change needed; the method only updates the repository.
  */
 @Slf4j
 @Service
 public class TaskService {
 
-    /** Maximum number of tasks in-flight (PENDING + IN_PROGRESS) at any time. */
     private static final int MAX_IN_FLIGHT = 50;
 
     private final TaskRepository taskRepository;
@@ -104,6 +101,14 @@ public class TaskService {
         this.registry = registry;
         this.metricsRegistry = metricsRegistry;
         this.env = env;
+    }
+
+    /**
+     * Resets the rate limiter semaphore back to exactly its capacity (used in testing).
+     */
+    public void resetRateLimiter() {
+        rateLimiter.drainPermits();
+        rateLimiter.release(MAX_IN_FLIGHT);
     }
 
     /**
@@ -214,13 +219,12 @@ public class TaskService {
      *
      * @param taskId the ID of the FAILED task to retry
      */
-    public void retryTask(String taskId) {
+    public void retryTask(@NonNull String taskId) {
         Task task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new TaskNotFoundException(taskId));
 
         int nextRetryCount = task.getRetryCount() + 1;
 
-        // Atomically: FAILED → PENDING (the only path out of FAILED).
         try {
             stateManager.retryTransition(taskId, nextRetryCount, "Retry attempt #" + nextRetryCount);
         } catch (InvalidTaskStateException e) {
@@ -228,14 +232,12 @@ public class TaskService {
             return;
         }
 
-        // Sync local object fields
         task.setRetryCount(nextRetryCount);
         task.setStartedAt(null);
         task.setCompletedAt(null);
         task.setErrorMessage(null);
         task.setResult(null);
 
-        // Acquire Semaphore permit. Blocking is acceptable here (retry scheduler thread).
         try {
             if (!rateLimiter.tryAcquire(permitTimeoutSeconds, TimeUnit.SECONDS)) {
                 log.warn("Retry permit acquisition timed out for task [{}] after {}s — marking permanently FAILED",
@@ -262,7 +264,7 @@ public class TaskService {
      *
      * @throws TaskNotFoundException if no task with that ID exists
      */
-    public Task getTask(String taskId) {
+    public Task getTask(@NonNull String taskId) {
         return taskRepository.findById(taskId)
                 .orElseThrow(() -> {
                     log.warn("Task not found: id={}", taskId);
@@ -290,7 +292,7 @@ public class TaskService {
      * @throws TaskNotFoundException      if no task with that ID exists
      * @throws InvalidTaskStateException  if the task is not in PENDING status
      */
-    public void cancelTask(String taskId) {
+    public void cancelTask(@NonNull String taskId) {
         taskRepository.findById(taskId)
                 .orElseThrow(() -> {
                     log.warn("Cancel requested for unknown task: id={}", taskId);
@@ -352,7 +354,6 @@ public class TaskService {
         Thread recoveryThread = new Thread(() -> {
             log.info("Starting recovery of crashed/pending tasks...");
             
-            // 1. Reset all IN_PROGRESS tasks to PENDING
             try {
                 List<Task> inProgress = taskRepository.findByStatus(TaskStatus.IN_PROGRESS);
                 for (Task task : inProgress) {
@@ -372,7 +373,6 @@ public class TaskService {
                 log.error("Failed to fetch IN_PROGRESS tasks for recovery: {}", e.getMessage());
             }
 
-            // 2. Query all PENDING tasks and re-submit them
             try {
                 List<Task> pending = taskRepository.findByStatus(TaskStatus.PENDING);
                 log.info("Found {} pending tasks to recover.", pending.size());
@@ -399,7 +399,7 @@ public class TaskService {
 
     private void recoverAndSubmit(Task task) {
         try {
-            rateLimiter.acquire(); // block until a permit is available
+            rateLimiter.acquire();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("Recovery interrupted for task [{}]", task.getTaskId());

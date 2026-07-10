@@ -80,7 +80,6 @@ public class CircuitBreakerRegistry {
                 .incrementAndGet();
 
         if (count >= FAILURE_THRESHOLD) {
-            // Emit at WARN level so monitoring alert rules can trigger on this pattern.
             log.warn(
                     "CIRCUIT BREAKER THRESHOLD REACHED — {} consecutive permanent failures " +
                     "for {}. Consider pausing submissions of this type.",
