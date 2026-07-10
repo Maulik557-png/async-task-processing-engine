@@ -4,6 +4,7 @@ import com.poc.taskengine.enums.TaskStatus;
 import com.poc.taskengine.model.Task;
 import com.poc.taskengine.service.TaskStateManager;
 import lombok.extern.slf4j.Slf4j;
+import java.time.Instant;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -191,10 +192,12 @@ public class ReportGenerationPipeline {
 
         simulateWork(150, 250);
 
-        // Mutate non-status fields BEFORE transitionStatus.
-        task.setResult("PDF available at: " + pdfRef);
-        task.setCompletedAt(java.time.Instant.now());
-        stateManager.transitionStatus(task.getTaskId(), TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED);
+        Instant completedAt = java.time.Instant.now();
+        String resultStr = "PDF available at: " + pdfRef;
+        stateManager.transitionStatusAndCompletedSuccess(task.getTaskId(), TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED, completedAt, resultStr);
+        task.setStatus(TaskStatus.COMPLETED);
+        task.setResult(resultStr);
+        task.setCompletedAt(completedAt);
 
         log.info("[{}] REPORT_GENERATION task [{}] → COMPLETED", thread, task.getTaskId());
         return pdfRef;
@@ -209,11 +212,13 @@ public class ReportGenerationPipeline {
         log.error("[{}] REPORT_GENERATION task [{}] pipeline failed: {}",
                 thread, task.getTaskId(), cause.getMessage(), cause);
 
-        // Mutate non-status fields first.
-        task.setErrorMessage("Pipeline failure: " + cause.getMessage());
-        task.setCompletedAt(java.time.Instant.now());
+        Instant completedAt = java.time.Instant.now();
+        String errorMsg = "Pipeline failure: " + cause.getMessage();
         try {
-            stateManager.transitionStatus(task.getTaskId(), TaskStatus.IN_PROGRESS, TaskStatus.FAILED);
+            stateManager.transitionStatusAndCompletedFailure(task.getTaskId(), TaskStatus.IN_PROGRESS, TaskStatus.FAILED, completedAt, errorMsg);
+            task.setStatus(TaskStatus.FAILED);
+            task.setErrorMessage(errorMsg);
+            task.setCompletedAt(completedAt);
         } catch (Exception saveEx) {
             log.warn("[{}] Task [{}] could not be marked FAILED after pipeline error: {}",
                     thread, task.getTaskId(), saveEx.getMessage());

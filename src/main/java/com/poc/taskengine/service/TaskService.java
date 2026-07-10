@@ -14,10 +14,13 @@ import com.poc.taskengine.worker.TaskWorker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import jakarta.annotation.PostConstruct;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
@@ -69,6 +72,7 @@ public class TaskService {
     private final CircuitBreakerRegistry circuitBreaker;
     private final TaskHandlerRegistry registry;
     private final MetricsRegistry metricsRegistry;
+    private final org.springframework.core.env.Environment env;
 
     @Value("${task.retry.permit-timeout-seconds:5}")
     private long permitTimeoutSeconds;
@@ -88,7 +92,8 @@ public class TaskService {
                        RetryScheduler retryScheduler,
                        CircuitBreakerRegistry circuitBreaker,
                        TaskHandlerRegistry registry,
-                       MetricsRegistry metricsRegistry) {
+                       MetricsRegistry metricsRegistry,
+                       org.springframework.core.env.Environment env) {
         this.taskRepository = taskRepository;
         this.taskExecutor = taskExecutor;
         this.criticalTaskExecutor = criticalTaskExecutor;
@@ -98,6 +103,7 @@ public class TaskService {
         this.circuitBreaker = circuitBreaker;
         this.registry = registry;
         this.metricsRegistry = metricsRegistry;
+        this.env = env;
     }
 
     /**
@@ -109,25 +115,30 @@ public class TaskService {
     public String submitTask(TaskType type, TaskPriority priority,
                              String payload, String submittedBy, int maxRetries) {
         return submitTask(type, priority, payload, submittedBy, maxRetries,
-                UUID.randomUUID().toString());
+                UUID.randomUUID().toString(), null);
     }
 
-    /**
-     * Overload that accepts a caller-provided task ID.
-     *
-     * <p>This is useful in tests where the caller needs to pre-register the task ID
-     * in {@link com.poc.taskengine.worker.TaskWorker#forceFailCounts} BEFORE the
-     * worker thread starts executing. With the standard overload, the UUID is generated
-     * inside submitTask — the caller cannot know it before submission, creating a race
-     * where the worker picks up the task before the test can register force-fail data.
-     *
-     * <p>In production code, always use the 5-argument overload (UUID generated here).
-     *
-     * @throws TaskQueueFullException if the in-flight task limit (50) has been reached
-     */
     public String submitTask(TaskType type, TaskPriority priority,
                              String payload, String submittedBy, int maxRetries,
                              String taskId) {
+        return submitTask(type, priority, payload, submittedBy, maxRetries,
+                taskId, null);
+    }
+
+    /**
+     * Complete submission workflow with idempotency support and duplicate race protection.
+     */
+    public String submitTask(TaskType type, TaskPriority priority,
+                             String payload, String submittedBy, int maxRetries,
+                             String taskId, String idempotencyKey) {
+
+        if (idempotencyKey != null && !idempotencyKey.trim().isEmpty()) {
+            Optional<Task> existing = taskRepository.findByIdempotencyKey(idempotencyKey);
+            if (existing.isPresent()) {
+                log.info("Idempotent submission matched existing task [{}]. Returning ID.", existing.get().getTaskId());
+                return existing.get().getTaskId();
+            }
+        }
 
         if (!rateLimiter.tryAcquire()) {
             log.warn("Rate limit reached ({} in-flight). Rejecting submission by {}", MAX_IN_FLIGHT, submittedBy);
@@ -144,15 +155,48 @@ public class TaskService {
                 .createdAt(Instant.now())
                 .retryCount(0)
                 .maxRetries(maxRetries)
+                .idempotencyKey(idempotencyKey)
                 .build();
 
-        taskRepository.save(task);
+        try {
+            taskRepository.save(task);
+        } catch (Exception e) {
+            if (idempotencyKey != null && isUniqueConstraintViolation(e)) {
+                rateLimiter.release();
+                Task concurrentTask = taskRepository.findByIdempotencyKey(idempotencyKey)
+                        .orElseThrow(() -> new RuntimeException("Concurrent insert failed but task could not be retrieved", e));
+                log.info("Concurrent insert caught. Returning ID of existing task [{}].", concurrentTask.getTaskId());
+                return concurrentTask.getTaskId();
+            }
+            rateLimiter.release();
+            throw e;
+        }
+
         metricsRegistry.recordSubmission();
-        log.info("Task [{}] submitted: type={}, priority={}, submittedBy={}, maxRetries={}",
-                task.getTaskId(), type, priority, submittedBy, maxRetries);
+        log.info("Task [{}] submitted: type={}, priority={}, submittedBy={}, maxRetries={}, idempotencyKey={}",
+                task.getTaskId(), type, priority, submittedBy, maxRetries, idempotencyKey);
 
         enqueueWorker(task);
         return task.getTaskId();
+    }
+
+    private boolean isUniqueConstraintViolation(Throwable t) {
+        while (t != null) {
+            if (t instanceof org.hibernate.exception.ConstraintViolationException) {
+                return true;
+            }
+            if (t instanceof DataIntegrityViolationException) {
+                return true;
+            }
+            if (t instanceof java.sql.SQLException) {
+                String sqlState = ((java.sql.SQLException) t).getSQLState();
+                if ("23505".equals(sqlState)) {
+                    return true;
+                }
+            }
+            t = t.getCause();
+        }
+        return false;
     }
 
     /**
@@ -174,22 +218,22 @@ public class TaskService {
         Task task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new TaskNotFoundException(taskId));
 
-        // Increment retryCount — records which attempt number this will be.
-        task.setRetryCount(task.getRetryCount() + 1);
-
-        // Clear transient fields so the retry attempt starts fresh.
-        task.setStartedAt(null);
-        task.setCompletedAt(null);
-        task.setErrorMessage(null);
-        task.setResult(null);
+        int nextRetryCount = task.getRetryCount() + 1;
 
         // Atomically: FAILED → PENDING (the only path out of FAILED).
         try {
-            stateManager.retryTransition(taskId);
+            stateManager.retryTransition(taskId, nextRetryCount, "Retry attempt #" + nextRetryCount);
         } catch (InvalidTaskStateException e) {
             log.warn("Retry aborted for task [{}] — unexpected state: {}", taskId, e.getMessage());
             return;
         }
+
+        // Sync local object fields
+        task.setRetryCount(nextRetryCount);
+        task.setStartedAt(null);
+        task.setCompletedAt(null);
+        task.setErrorMessage(null);
+        task.setResult(null);
 
         // Acquire Semaphore permit. Blocking is acceptable here (retry scheduler thread).
         try {
@@ -295,5 +339,72 @@ public class TaskService {
         };
 
         executor.execute(new PriorityTaskWrapper(rateLimitedWorker, task.getPriority(), task.getTaskId()));
+    }
+
+    @PostConstruct
+    public void recoverTasks() {
+        boolean recoveryEnabled = env.getProperty("task.recovery.enabled", Boolean.class, true);
+        if (!recoveryEnabled || java.util.Arrays.asList(env.getActiveProfiles()).contains("test") || isRunningTest()) {
+            log.info("Task recovery is disabled for test environment.");
+            return;
+        }
+
+        Thread recoveryThread = new Thread(() -> {
+            log.info("Starting recovery of crashed/pending tasks...");
+            
+            // 1. Reset all IN_PROGRESS tasks to PENDING
+            try {
+                List<Task> inProgress = taskRepository.findByStatus(TaskStatus.IN_PROGRESS);
+                for (Task task : inProgress) {
+                    log.info("Resetting crashed task [{}] from IN_PROGRESS to PENDING", task.getTaskId());
+                    try {
+                        taskRepository.updateStatusForRetry(task.getTaskId(), TaskStatus.PENDING, task.getRetryCount(), "Reset to PENDING on application restart");
+                        task.setStatus(TaskStatus.PENDING);
+                        task.setStartedAt(null);
+                        task.setCompletedAt(null);
+                        task.setErrorMessage("Reset to PENDING on application restart");
+                        task.setResult(null);
+                    } catch (Exception e) {
+                        log.error("Failed to reset crashed task [{}]: {}", task.getTaskId(), e.getMessage());
+                    }
+                }
+            } catch (Exception e) {
+                log.error("Failed to fetch IN_PROGRESS tasks for recovery: {}", e.getMessage());
+            }
+
+            // 2. Query all PENDING tasks and re-submit them
+            try {
+                List<Task> pending = taskRepository.findByStatus(TaskStatus.PENDING);
+                log.info("Found {} pending tasks to recover.", pending.size());
+                for (Task task : pending) {
+                    log.info("Recovering task [{}] (type={})", task.getTaskId(), task.getType());
+                    recoverAndSubmit(task);
+                }
+            } catch (Exception e) {
+                log.error("Failed to recover pending tasks: {}", e.getMessage());
+            }
+            log.info("Recovery of crashed/pending tasks completed.");
+        }, "task-recovery-thread");
+        recoveryThread.start();
+    }
+
+    private boolean isRunningTest() {
+        for (StackTraceElement element : Thread.currentThread().getStackTrace()) {
+            if (element.getClassName().startsWith("org.junit.") || element.getClassName().contains("Test")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void recoverAndSubmit(Task task) {
+        try {
+            rateLimiter.acquire(); // block until a permit is available
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Recovery interrupted for task [{}]", task.getTaskId());
+            return;
+        }
+        enqueueWorker(task);
     }
 }

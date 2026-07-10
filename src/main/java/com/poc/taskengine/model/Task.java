@@ -115,7 +115,7 @@ public class Task {
     /**
      * History of all status transitions that this task has undergone.
      */
-    @OneToMany(mappedBy = "task", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    @OneToMany(mappedBy = "task", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
     @Builder.Default
     @ToString.Exclude
     @EqualsAndHashCode.Exclude

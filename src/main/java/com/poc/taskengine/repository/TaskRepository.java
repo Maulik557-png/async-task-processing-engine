@@ -48,6 +48,11 @@ public interface TaskRepository {
     Optional<Task> findById(String taskId);
 
     /**
+     * Look up a task by its unique identifier and acquire a pessimistic write lock.
+     */
+    Optional<Task> findByIdForUpdate(String taskId);
+
+    /**
      * Return all tasks currently held in the store, in no guaranteed order.
      *
      * @return a snapshot list; never null, may be empty
@@ -64,17 +69,38 @@ public interface TaskRepository {
     List<Task> findByStatus(TaskStatus status);
 
     /**
-     * Atomically update the status of a single task.
+     * Look up a task by its optional idempotency key.
      *
-     * This method exists as a first-class operation (rather than load + mutate +
-     * save) because:
-     *   - In-memory: allows a compare-and-set to prevent two threads racing to
-     *     change the same task's status simultaneously.
-     *   - JPA: allows a targeted UPDATE ... SET status=? WHERE taskId=? query
-     *     rather than a full entity load, which is safer under optimistic locking.
+     * @param idempotencyKey the idempotency key to query
+     * @return an Optional containing the task, or empty if not found
+     */
+    Optional<Task> findByIdempotencyKey(String idempotencyKey);
+
+    /**
+     * Atomically update the status of a single task.
      *
      * @param taskId    the task to update; must not be null
      * @param newStatus the target status; must not be null
      */
     void updateStatus(String taskId, TaskStatus newStatus);
+
+    /**
+     * Atomically update status and startedAt timestamp.
+     */
+    void updateStatusAndStartedAt(String taskId, TaskStatus newStatus, java.time.Instant startedAt);
+
+    /**
+     * Atomically update status, completedAt, and result for successful completion.
+     */
+    void updateStatusAndCompletedSuccess(String taskId, TaskStatus newStatus, java.time.Instant completedAt, String result);
+
+    /**
+     * Atomically update status, completedAt, and errorMessage for completion failures.
+     */
+    void updateStatusAndCompletedFailure(String taskId, TaskStatus newStatus, java.time.Instant completedAt, String errorMessage);
+
+    /**
+     * Atomically transition a task for retry, incrementing count and resetting transient state.
+     */
+    void updateStatusForRetry(String taskId, TaskStatus newStatus, int retryCount, String errorMessage);
 }

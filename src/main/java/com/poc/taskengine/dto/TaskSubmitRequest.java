@@ -59,4 +59,9 @@ public class TaskSubmitRequest {
      */
     @Min(value = 0, message = "maxRetries must be 0 or greater")
     private Integer maxRetries;
+
+    /**
+     * Optional idempotency key to prevent double submissions.
+     */
+    private String idempotencyKey;
 }

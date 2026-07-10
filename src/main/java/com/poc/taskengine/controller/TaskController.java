@@ -65,7 +65,8 @@ public class TaskController {
                 params.priority(),
                 params.payload(),
                 params.submittedBy(),
-                params.maxRetries()
+                params.maxRetries(),
+                params.idempotencyKey()
         );
 
         log.info("POST /api/v1/tasks → accepted taskId={}", taskId);
