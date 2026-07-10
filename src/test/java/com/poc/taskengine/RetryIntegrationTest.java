@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "task.timeout.seconds=300",       // prevent watchdog from evicting test tasks
         "task.watchdog.interval-ms=60000"  // watchdog fires once per minute during tests
 })
-class RetryIntegrationTest {
+public class RetryIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private TaskService taskService;

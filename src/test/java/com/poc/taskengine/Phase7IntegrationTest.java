@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
-class Phase7IntegrationTest {
+public class Phase7IntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private TaskService taskService;
