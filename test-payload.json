@@ -1,7 +1,0 @@
-{
-    "type": "REPORT_GENERATION",
-    "priority": "HIGH",
-    "payload": "{}",
-    "submittedBy": "phase3-test",
-    "maxRetries": 2
-}

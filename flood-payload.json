@@ -1,7 +1,0 @@
-{
-    "type": "DATA_EXPORT",
-    "priority": "LOW",
-    "payload": "{}",
-    "submittedBy": "flood-test",
-    "maxRetries": 0
-}
